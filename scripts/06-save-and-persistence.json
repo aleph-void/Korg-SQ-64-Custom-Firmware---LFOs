@@ -49,9 +49,19 @@
       "ms": 1500
     },
     {
+      "type": "button",
+      "control": "shift",
+      "down": true
+    },
+    {
       "type": "press",
       "control": "global",
       "ms": 150
+    },
+    {
+      "type": "button",
+      "control": "shift",
+      "down": false
     },
     {
       "type": "wait",

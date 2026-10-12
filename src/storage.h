@@ -12,7 +12,8 @@ void spi_flash_erase_4k(uint32_t address);
 void spi_flash_erase_64k(uint32_t address);
 void spi_flash_program(uint32_t address, const uint8_t *data, uint32_t length);
 
-#define SETTINGS_ADDR 0x40000u
+#define SETTINGS_ADDR 0x40000u /* workspace settings, one 4 KiB sector  */
+#define GLOBALS_ADDR  0x41000u /* global settings record, one 4 KiB sector */
 
 /* Saved-project catalog: the 64 documented slot regions at
  * 0xC0000 + n * 0x3D000 (spec board contract). Each record occupies the
@@ -38,6 +39,10 @@ void spi_flash_program(uint32_t address, const uint8_t *data, uint32_t length);
 
 #define DIV_COUNT 16
 
+/* Patterns: each track owns 16 of them; one is active per track and the
+ * presence bitmap records which slots hold user content (PATTERN-001/002). */
+#define PATTERN_COUNT 16
+
 typedef struct {
     uint8_t wave;  /* 0..WAVE_COUNT-1 */
     uint8_t div;   /* 0..DIV_COUNT-1 synced rate division */
@@ -47,25 +52,43 @@ typedef struct {
     uint8_t dest;  /* DEST_* bit mask */
 } lfo_cfg_t;
 
+/* Workspace settings record ("LFO2"). The v1 record ("LFO1", one config per
+ * track) is a supported older format and loads as pattern 1 of each track. */
 typedef struct {
     uint32_t magic;
-    uint16_t bpm;      /* 20..300, internal clock */
-    uint8_t selected;  /* edited LFO 0..3 */
+    uint16_t bpm;       /* 20..300, internal clock */
+    uint8_t selected;   /* edited LFO 0..3 */
     uint8_t reserved;
-    lfo_cfg_t lfo[4];
+    uint8_t active[4];  /* active pattern per track, 0..15 */
+    uint16_t present[4]; /* presence bitmap per track; active bit always set */
+    lfo_cfg_t pattern[4][PATTERN_COUNT];
     uint32_t hash;
 } settings_t;
 
-/* A project is the musical content of the workspace: the four LFO
- * configurations plus the tempo. The edited-LFO selection stays in the
- * settings sector. */
+/* A project is the workspace's musical content: every pattern of every
+ * track, the active/presence maps and the tempo ("LFP2"; v1 "LFP1" records
+ * are a supported older format). The edited-LFO selection stays in the
+ * settings record. */
 typedef struct {
     uint32_t magic;
-    uint16_t bpm;        /* 20..300 */
+    uint16_t bpm;
     uint8_t reserved[2]; /* zero */
-    lfo_cfg_t lfo[4];
+    uint8_t active[4];
+    uint16_t present[4];
+    lfo_cfg_t pattern[4][PATTERN_COUNT];
     uint32_t hash;
 } project_t;
+
+/* Global settings record ("LFG1"): device-wide behavior, separate from the
+ * workspace and the saved-project catalog (GLOBAL-001/002). */
+typedef struct {
+    uint32_t magic;
+    uint8_t clock_out; /* 0/1: emit MIDI clock while playing */
+    uint8_t midi_base; /* 0..12: LFO n streams CC on channel midi_base+n */
+    uint8_t trig_ms;   /* 5..100: LFO D trigger pulse length, ms */
+    uint8_t cc_ms;     /* 1..50: minimum spacing between CC sends, ms */
+    uint32_t hash;
+} globals_t;
 
 typedef enum {
     PROJECT_OK = 0,
@@ -81,8 +104,12 @@ void settings_defaults(settings_t *s);
 bool settings_load(settings_t *s);
 void settings_save(const settings_t *s);
 
+void globals_defaults(globals_t *g);
+bool globals_load(globals_t *g);
+void globals_save(const globals_t *g);
+
 void project_defaults(project_t *p);
-project_status_t project_peek(int slot); /* classify without copying out */
+project_status_t project_peek(int slot); /* fast header-only occupancy probe */
 project_status_t project_load(int slot, project_t *p); /* fills p on OK only */
 project_status_t project_save(int slot, const project_t *p);
 project_status_t project_delete(int slot); /* deleting an empty slot is OK */

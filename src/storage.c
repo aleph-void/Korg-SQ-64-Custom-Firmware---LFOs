@@ -9,8 +9,31 @@
 
 int memcmp(const void *a, const void *b, size_t n); /* startup.c */
 
-#define SETTINGS_MAGIC 0x314f464cu /* "LFO1" */
-#define PROJECT_MAGIC  0x3150464cu /* "LFP1" */
+#define SETTINGS_MAGIC 0x324f464cu /* "LFO2" */
+#define PROJECT_MAGIC  0x3250464cu /* "LFP2" */
+#define GLOBALS_MAGIC  0x3147464cu /* "LFG1" */
+
+/* Supported older record formats (STORE-006): one configuration per track,
+ * no patterns. They load as pattern 1 of each track; saves write v2 only. */
+#define SETTINGS_V1_MAGIC 0x314f464cu /* "LFO1" */
+#define PROJECT_V1_MAGIC  0x3150464cu /* "LFP1" */
+
+typedef struct {
+    uint32_t magic;
+    uint16_t bpm;
+    uint8_t selected;
+    uint8_t reserved;
+    lfo_cfg_t lfo[4];
+    uint32_t hash;
+} settings_v1_t;
+
+typedef struct {
+    uint32_t magic;
+    uint16_t bpm;
+    uint8_t reserved[2];
+    lfo_cfg_t lfo[4];
+    uint32_t hash;
+} project_v1_t;
 
 static void cs(bool selected)
 {
@@ -129,13 +152,38 @@ static bool lfo_cfg_valid(const lfo_cfg_t *c)
         && c->phase <= 15 && c->cc <= 127 && c->dest <= 7;
 }
 
+/* Every pattern of a fresh workspace holds its track's default config;
+ * pattern 1 is active and the only one marked present. */
+static void patterns_defaults(uint8_t active[4], uint16_t present[4],
+                              lfo_cfg_t pattern[4][PATTERN_COUNT])
+{
+    for (int t = 0; t < 4; t++) {
+        active[t] = 0;
+        present[t] = 1;
+        for (int p = 0; p < PATTERN_COUNT; p++) pattern[t][p] = LFO_DEFAULTS[t];
+    }
+}
+
+static bool patterns_valid(const uint8_t active[4], const uint16_t present[4],
+                           const lfo_cfg_t pattern[4][PATTERN_COUNT])
+{
+    for (int t = 0; t < 4; t++) {
+        /* The active pattern must be marked present (PATTERN-002). */
+        if (active[t] >= PATTERN_COUNT || !(present[t] >> active[t] & 1))
+            return false;
+        for (int p = 0; p < PATTERN_COUNT; p++)
+            if (!lfo_cfg_valid(&pattern[t][p])) return false;
+    }
+    return true;
+}
+
 void settings_defaults(settings_t *s)
 {
     s->magic = SETTINGS_MAGIC;
     s->bpm = 120;
     s->selected = 0;
     s->reserved = 0;
-    for (int t = 0; t < 4; t++) s->lfo[t] = LFO_DEFAULTS[t];
+    patterns_defaults(s->active, s->present, s->pattern);
     s->hash = RECORD_HASH(s);
 }
 
@@ -143,8 +191,14 @@ static bool settings_valid(const settings_t *s)
 {
     if (s->magic != SETTINGS_MAGIC || s->hash != RECORD_HASH(s)) return false;
     if (s->bpm < 20 || s->bpm > 300 || s->selected > 3) return false;
+    return patterns_valid(s->active, s->present, s->pattern);
+}
+
+static bool lfo4_valid(const lfo_cfg_t lfo[4], uint16_t bpm)
+{
+    if (bpm < 20 || bpm > 300) return false;
     for (int t = 0; t < 4; t++)
-        if (!lfo_cfg_valid(&s->lfo[t])) return false;
+        if (!lfo_cfg_valid(&lfo[t])) return false;
     return true;
 }
 
@@ -152,6 +206,18 @@ bool settings_load(settings_t *s)
 {
     spi_flash_read(SETTINGS_ADDR, (uint8_t *)s, sizeof(*s));
     if (settings_valid(s)) return true;
+    /* Supported older format: migrate a valid v1 record (STORE-006). */
+    settings_v1_t v1;
+    spi_flash_read(SETTINGS_ADDR, (uint8_t *)&v1, sizeof(v1));
+    if (v1.magic == SETTINGS_V1_MAGIC && v1.hash == RECORD_HASH(&v1)
+        && v1.selected <= 3 && lfo4_valid(v1.lfo, v1.bpm)) {
+        settings_defaults(s);
+        s->bpm = v1.bpm;
+        s->selected = v1.selected;
+        for (int t = 0; t < 4; t++) s->pattern[t][0] = v1.lfo[t];
+        s->hash = RECORD_HASH(s);
+        return true;
+    }
     settings_defaults(s);
     return false;
 }
@@ -169,6 +235,46 @@ void settings_save(const settings_t *s)
     spi_flash_program(SETTINGS_ADDR, (const uint8_t *)&copy, sizeof(copy));
 }
 
+/* --- Global settings record (GLOBAL-001..002) ---------------------------- */
+
+void globals_defaults(globals_t *g)
+{
+    g->magic = GLOBALS_MAGIC;
+    g->clock_out = 1;
+    g->midi_base = 0;
+    g->trig_ms = 20;
+    g->cc_ms = 10;
+    g->hash = RECORD_HASH(g);
+}
+
+static bool globals_valid(const globals_t *g)
+{
+    return g->magic == GLOBALS_MAGIC && g->hash == RECORD_HASH(g)
+        && g->clock_out <= 1 && g->midi_base <= 12
+        && g->trig_ms >= 5 && g->trig_ms <= 100
+        && g->cc_ms >= 1 && g->cc_ms <= 50;
+}
+
+bool globals_load(globals_t *g)
+{
+    spi_flash_read(GLOBALS_ADDR, (uint8_t *)g, sizeof(*g));
+    if (globals_valid(g)) return true;
+    globals_defaults(g);
+    return false;
+}
+
+void globals_save(const globals_t *g)
+{
+    globals_t copy = *g;
+    copy.magic = GLOBALS_MAGIC;
+    copy.hash = RECORD_HASH(&copy);
+    globals_t stored;
+    spi_flash_read(GLOBALS_ADDR, (uint8_t *)&stored, sizeof(stored));
+    if (memcmp(&stored, &copy, sizeof(copy)) == 0) return;
+    spi_flash_erase_4k(GLOBALS_ADDR);
+    spi_flash_program(GLOBALS_ADDR, (const uint8_t *)&copy, sizeof(copy));
+}
+
 /* --- Saved-project catalog (PROJECT-001..004) --------------------------- */
 
 static uint32_t slot_addr(int slot)
@@ -181,7 +287,7 @@ void project_defaults(project_t *p)
     p->magic = PROJECT_MAGIC;
     p->bpm = 120;
     p->reserved[0] = p->reserved[1] = 0;
-    for (int t = 0; t < 4; t++) p->lfo[t] = LFO_DEFAULTS[t];
+    patterns_defaults(p->active, p->present, p->pattern);
     p->hash = RECORD_HASH(p);
 }
 
@@ -189,18 +295,7 @@ static bool project_valid(const project_t *p)
 {
     if (p->magic != PROJECT_MAGIC || p->hash != RECORD_HASH(p)) return false;
     if (p->bpm < 20 || p->bpm > 300) return false;
-    for (int t = 0; t < 4; t++)
-        if (!lfo_cfg_valid(&p->lfo[t])) return false;
-    return true;
-}
-
-static project_status_t classify(const project_t *p)
-{
-    const uint8_t *bytes = (const uint8_t *)p;
-    bool blank = true;
-    for (uint32_t i = 0; i < sizeof(*p) && blank; i++) blank = bytes[i] == 0xff;
-    if (blank) return PROJECT_EMPTY;
-    return project_valid(p) ? PROJECT_OK : PROJECT_INVALID;
+    return patterns_valid(p->active, p->present, p->pattern);
 }
 
 project_status_t project_load(int slot, project_t *p)
@@ -208,15 +303,42 @@ project_status_t project_load(int slot, project_t *p)
     project_t record;
     if (slot < 0 || slot >= project_slots_available()) return PROJECT_UNAVAIL;
     spi_flash_read(slot_addr(slot), (uint8_t *)&record, sizeof(record));
-    project_status_t status = classify(&record);
-    if (status == PROJECT_OK) *p = record;
-    return status;
+    const uint8_t *bytes = (const uint8_t *)&record;
+    bool blank = true;
+    for (uint32_t i = 0; i < sizeof(record) && blank; i++) blank = bytes[i] == 0xff;
+    if (blank) return PROJECT_EMPTY;
+    if (project_valid(&record)) {
+        *p = record;
+        return PROJECT_OK;
+    }
+    /* Supported older format: migrate a valid v1 record (STORE-006). */
+    project_v1_t v1;
+    spi_flash_read(slot_addr(slot), (uint8_t *)&v1, sizeof(v1));
+    if (v1.magic == PROJECT_V1_MAGIC && v1.hash == RECORD_HASH(&v1)
+        && lfo4_valid(v1.lfo, v1.bpm)) {
+        project_defaults(p);
+        p->bpm = v1.bpm;
+        for (int t = 0; t < 4; t++) p->pattern[t][0] = v1.lfo[t];
+        p->hash = RECORD_HASH(p);
+        return PROJECT_OK;
+    }
+    return PROJECT_INVALID;
 }
 
+/* Fast occupancy probe for the catalog display: header bytes only, so a
+ * 64-slot rescan stays cheap. Full validation happens on project_load. */
 project_status_t project_peek(int slot)
 {
-    project_t record;
-    return project_load(slot, &record);
+    uint8_t head[16];
+    if (slot < 0 || slot >= project_slots_available()) return PROJECT_UNAVAIL;
+    spi_flash_read(slot_addr(slot), head, sizeof(head));
+    bool blank = true;
+    for (uint32_t i = 0; i < sizeof(head) && blank; i++) blank = head[i] == 0xff;
+    if (blank) return PROJECT_EMPTY;
+    uint32_t magic = head[0] | (uint32_t)head[1] << 8 | (uint32_t)head[2] << 16
+                   | (uint32_t)head[3] << 24;
+    return magic == PROJECT_MAGIC || magic == PROJECT_V1_MAGIC
+        ? PROJECT_OK : PROJECT_INVALID;
 }
 
 project_status_t project_save(int slot, const project_t *p)
@@ -242,7 +364,10 @@ project_status_t project_delete(int slot)
     project_t record;
     if (slot < 0 || slot >= project_slots_available()) return PROJECT_UNAVAIL;
     spi_flash_read(slot_addr(slot), (uint8_t *)&record, sizeof(record));
-    if (classify(&record) == PROJECT_EMPTY) return PROJECT_OK; /* already empty */
+    const uint8_t *bytes = (const uint8_t *)&record;
+    bool blank = true;
+    for (uint32_t i = 0; i < sizeof(record) && blank; i++) blank = bytes[i] == 0xff;
+    if (blank) return PROJECT_OK; /* already empty: no redundant erase */
     spi_flash_erase_4k(slot_addr(slot));
     return PROJECT_OK;
 }

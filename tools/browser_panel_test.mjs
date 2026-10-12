@@ -127,8 +127,8 @@ hold('shift', true);
 press('A1');
 hold('shift', false);
 const a1 = slotBytes(machine, 0);
-check(a1[0] === 0x4c && a1[1] === 0x46 && a1[2] === 0x50 && a1[3] === 0x31,
-  'save wrote a project record to slot A1 (magic LFP1)');
+check(a1[0] === 0x4c && a1[1] === 0x46 && a1[2] === 0x50 && a1[3] === 0x32,
+  'save wrote a project record to slot A1 (magic LFP2)');
 check(slotBytes(machine, 1).every(b => b === 0xff), 'save left neighbor slot A2 untouched');
 check(settingsSector(machine) === settingsBefore, 'save left the settings sector untouched');
 
@@ -188,11 +188,83 @@ press('project'); // leave the project manager
 run(400000);
 check(machine.board.panel.leds.project < 64, 'PROJECT LED off after leaving project mode');
 
-// Commit with GLOBAL, then power off and verify the hold release.
-const writesBefore = machine.board.flash.writes;
+// --- Patterns (PATTERN-001..002) -------------------------------------------
+press('pattern');
+run(400000);
+check(machine.board.panel.leds.pattern > 128, 'PATTERN LED lit in pattern mode');
+
+// LFO B plays pattern 1 (CC 7). Selecting pattern 2 activates a fresh default
+// pattern (CC 2) and the selection takes effect immediately.
+press('B2');
+mark = midi.length;
+run(6000000);
+check(streams(mark).has('1:2'), 'selected pattern B2 took effect (default CC 2)');
+
+// Edit isolation: leave pattern mode, edit B2's CC, then switch back to B1.
+press('pattern');
+machine.event({type: 'encoder', control: 'swing', delta: 3}); // B2: CC 2 -> 5
+run(4000000);
+mark = midi.length;
+run(4000000);
+check(streams(mark).has('1:5'), 'edited active pattern B2 streams CC 5');
+press('pattern');
+press('B1');
+mark = midi.length;
+run(6000000);
+check(streams(mark).has('1:7') && !streams(mark).has('1:5'),
+  'returning to pattern B1 restored its CC 7 (non-selected preserved)');
+press('pattern'); // exit pattern mode
+run(400000);
+check(machine.board.panel.leds.pattern < 64, 'PATTERN LED off after leaving pattern mode');
+
+// --- SHIFT-001: SHIFT is a modifier only -----------------------------------
+const shiftWrites = machine.board.flash.writes;
+press('shift'); // SHIFT alone: no effect
+hold('shift', true);
+mark = midi.length;
+press('play'); // undeclared SHIFT combination: the transport must not start
+machine.event({type: 'encoder', control: 'swing', delta: 4}); // undeclared
+run(4000000);
+hold('shift', false);
+check(!midi.slice(mark).some(m => m[0] === 0xfa), 'SHIFT+PLAY started no transport');
+run(4000000);
+check(!streams(mark).has('1:11'), 'SHIFT+encoder changed no CC assignment');
+check(machine.board.flash.writes === shiftWrites,
+  'SHIFT alone and undeclared SHIFT combinations wrote nothing');
+
+// --- Global settings (GLOBAL-001..002) --------------------------------------
+// Browsing alone commits nothing.
+const browseWrites = machine.board.flash.writes;
+press('global'); // enter global settings mode
+run(400000);
+check(machine.board.panel.leds.global > 128, 'GLOBAL LED lit in global settings mode');
+press('global'); // documented exit, no edits made
+run(400000);
+check(machine.board.flash.writes === browseWrites, 'browsing global settings committed nothing');
+
+// Edit the MIDI channel base to 5..8: immediate behavioral effect, committed
+// on exit, and visible in the exported global record.
 press('global');
-run(2000000);
-check(machine.board.flash.writes > writesBefore, 'GLOBAL committed settings to SPI flash');
+machine.event({type: 'encoder', control: 'param2', delta: 4});
+run(4000000);
+mark = midi.length;
+run(6000000);
+check(streams(mark).has('4:1'), 'CC streams moved to channel 5 while editing (LFO A)');
+const globalWrites = machine.board.flash.writes;
+press('global'); // exit commits the edit
+check(machine.board.flash.writes > globalWrites, 'global edit committed on exit');
+const glbRec = Array.from(machine.board.flash.data.slice(0x41000, 0x41008));
+check(glbRec[0] === 0x4c && glbRec[1] === 0x46 && glbRec[2] === 0x47 && glbRec[3] === 0x31,
+  'global record written (magic LFG1)');
+check(glbRec[5] === 4, 'committed global record holds MIDI base channel 5');
+
+// Commit the workspace settings with SHIFT+GLOBAL, then power off.
+const writesBefore = machine.board.flash.writes;
+hold('shift', true);
+press('global');
+hold('shift', false);
+check(machine.board.flash.writes > writesBefore,
+  'SHIFT+GLOBAL committed workspace settings to SPI flash');
 
 machine.event({type: 'power', down: true});
 run(4000000);
@@ -208,8 +280,8 @@ const run2 = n => {
 };
 run2(6000000);
 check(machine2.board.panel.leds.trackB > 128, 'committed selection (LFO B) restored after restart');
-check(midi2.some(m => (m[0] & 0xff) === 0xb1 && m[1] === 7),
-  'committed CC assignment (B on CC 7) restored after restart');
+check(midi2.some(m => (m[0] & 0xff) === 0xb5 && m[1] === 7),
+  'committed CC assignment and global MIDI base (B on CC 7, channel 6) restored after restart');
 
 // Saved projects persist across the cold restart: reset the workspace to the
 // defaults (B back to CC 2), then load slot D16 to bring back CC 7.
@@ -217,20 +289,49 @@ const press2 = control => {
   machine2.event({type: 'button', control, down: true}); run2(400000);
   machine2.event({type: 'button', control, down: false}); run2(400000);
 };
+// Pattern contents persist too: B2 still holds the CC 5 edit.
+press2('pattern');
+press2('B2');
+let markPat = midi2.length;
+run2(6000000);
+check(midi2.slice(markPat).some(m => (m[0] & 0xff) === 0xb5 && m[1] === 5),
+  'pattern B2 content (CC 5) persisted across the cold restart');
+press2('pattern');
 machine2.event({type: 'button', control: 'shift', down: true}); run2(400000);
 press2('project');
 machine2.event({type: 'button', control: 'shift', down: false}); run2(400000);
 let mark2 = midi2.length;
 run2(6000000);
-check(midi2.slice(mark2).some(m => (m[0] & 0xff) === 0xb1 && m[1] === 2),
-  'new project after restart reset LFO B to CC 2');
+check(midi2.slice(mark2).some(m => (m[0] & 0xff) === 0xb5 && m[1] === 2),
+  'new project after restart reset LFO B to CC 2 (globals untouched)');
 press2('project');
 press2('D16');
 mark2 = midi2.length;
 run2(6000000);
-check(midi2.slice(mark2).some(m => (m[0] & 0xff) === 0xb1 && m[1] === 7),
+check(midi2.slice(mark2).some(m => (m[0] & 0xff) === 0xb5 && m[1] === 7),
   'project in last slot D16 reloads after the cold restart');
 machine2.close();
+
+// STORE-006: a v1.0 settings record (magic LFO1, one config per track) is a
+// supported older format and loads migrated: its configs become pattern 1.
+const v1 = new Uint8Array(36);
+v1.set([0x4c, 0x46, 0x4f, 0x31]); // "LFO1"
+v1[4] = 200 & 255; v1[5] = 200 >> 8; // bpm 200
+v1[6] = 2; // selected LFO C
+[[0, 7, 100, 0, 1, 1], [1, 5, 100, 4, 2, 1], [2, 3, 100, 0, 11, 1], [5, 10, 100, 0, 74, 0]]
+  .flat().forEach((b, i) => { v1[8 + i] = b; });
+let h = 0x811c9dc5;
+for (let i = 0; i < 32; i++) h = Math.imul(h ^ v1[i], 0x01000193) >>> 0;
+v1[32] = h & 255; v1[33] = h >> 8 & 255; v1[34] = h >> 16 & 255; v1[35] = h >> 24 & 255;
+const midi3 = [];
+const machine3 = new Machine(engine, await loadImage(new Uint8Array(readFileSync(imagePath))), {onMidi: m => midi3.push(Array.from(m))});
+machine3.board.flash.data.set(v1, 0x40000);
+let n3 = 6000000;
+while (n3 > 0) { const r = machine3.run(200000); if (r.error) throw Error(r.error); n3 -= 200000; }
+check(machine3.board.panel.leds.trackC > 128, 'v1 settings record migrated: committed selection (LFO C) restored');
+check(midi3.some(m => (m[0] & 0xff) === 0xb1 && m[1] === 2),
+  'v1 settings record migrated: configs load as pattern 1 of each track');
+machine3.close();
 
 machine.close();
 if (failures.length) { console.error('FAILED: ' + failures.join('; ')); process.exit(1); }

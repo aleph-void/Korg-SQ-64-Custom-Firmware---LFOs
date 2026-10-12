@@ -7,12 +7,19 @@
  * LFO has a waveform, a tempo-synced rate division, depth, a phase offset
  * and a MIDI CC number. LFOs A/B/C can drive their mod CV, pitch CV and
  * gate jacks; LFO D pulses trigger jack 1 once per cycle. All four stream
- * MIDI CCs on channels 1..4. GLOBAL commits settings to SPI flash and the
+ * MIDI CCs. SHIFT+GLOBAL commits workspace settings to SPI flash and the
  * power button saves and shuts down cleanly.
  *
- * The PROJECT button manages the 64 documented saved-project slots: in
- * project mode each pad is a slot (load; SHIFT+pad saves; RECORD+pad
- * deletes) and SHIFT+PROJECT starts a new default project (PROJECT-001..004).
+ * Mode keys (each key returns to normal mode; SHIFT is a declared modifier
+ * only, SHIFT-001):
+ * - PROJECT manages the 64 documented saved-project slots: each pad is a
+ *   slot (load; SHIFT+pad saves; RECORD+pad deletes) and SHIFT+PROJECT
+ *   starts a new default project (PROJECT-001..004).
+ * - PATTERN selects each track's active pattern from its 16 pattern slots
+ *   on the pads (PATTERN-001..002).
+ * - GLOBAL opens the global settings mode: the parameter encoders edit the
+ *   four global fields and GLOBAL exits, committing any edits
+ *   (GLOBAL-001..002). Browsing alone commits nothing.
  */
 #include <stdbool.h>
 
@@ -45,13 +52,17 @@ static const char *const WAVE_NAMES[WAVE_COUNT] = {
 };
 
 static settings_t cfg;
+static globals_t glb;       /* committed global settings, live copy */
+static globals_t glb_entry; /* snapshot at global-mode entry, for commit-on-exit */
 static bool playing;
 
-/* Project manager: the PROJECT button toggles a slot-grid mode where the 64
- * pads address the 64 documented saved-project slots (pad = load, SHIFT+pad
- * = save, RECORD+pad = delete); SHIFT+PROJECT starts a new default project. */
+/* UI modes. PROJECT, PATTERN and GLOBAL each toggle their mode; GLOBAL mode
+ * is left only through GLOBAL (the documented exit, GLOBAL-001). */
+typedef enum { MODE_NORMAL, MODE_PROJECT, MODE_PATTERN, MODE_GLOBAL } ui_mode_t;
+static ui_mode_t mode;
+
+/* Project manager state. */
 #define SLOT_NONE 0xff
-static bool project_mode;
 static uint8_t cur_slot = SLOT_NONE;      /* last loaded/saved slot */
 static uint8_t slot_state[PROJECT_COUNT]; /* cached project_status_t per slot */
 static const char *status_msg;
@@ -78,6 +89,12 @@ static uint32_t cc_sent_ms[4];
 static uint32_t trigger_off_ms;
 static uint32_t tap_last_ms;
 static volatile bool rt_start, rt_stop;
+
+/* A track's sound is its active pattern's configuration (PATTERN-001). */
+static lfo_cfg_t *lfo_cur(int t)
+{
+    return &cfg.pattern[t][cfg.active[t]];
+}
 
 static bool ext_active(void)
 {
@@ -118,14 +135,14 @@ static void clock_advance_ms(void)
     if (pos_frac >= 65536u) {
         pos_frac -= 65536u;
         pos_tick++;
-        if (playing) midi_send((const uint8_t[]){0xf8}, 1);
+        if (playing && glb.clock_out) midi_send((const uint8_t[]){0xf8}, 1);
     }
 }
 
 static uint16_t wave_value(int i, uint16_t phase)
 {
     uint32_t v;
-    switch (cfg.lfo[i].wave) {
+    switch (lfo_cur(i)->wave) {
     case WAVE_SINE: { /* smoothstep of the triangle: a round LFO sine */
         uint32_t t = phase < 32768 ? phase * 2u : (65535u - phase) * 2u;
         uint32_t w = (t * t) >> 16;
@@ -154,14 +171,14 @@ static void lfo_update(void)
 {
     uint32_t now = g_ms;
     for (int i = 0; i < 4; i++) {
-        const lfo_cfg_t *c = &cfg.lfo[i];
+        const lfo_cfg_t *c = lfo_cur(i);
         uint32_t period = DIV_TICKS[c->div];
         uint16_t raw = (uint16_t)(((pos_tick % period) << 16 | pos_frac) / period);
         if (raw < lfo_phase_raw[i]) { /* cycle wrapped */
             prng_step(i);
             if (i == 3 && (c->dest & DEST_GATE)) {
                 panel_triggers(1);
-                trigger_off_ms = now + 20;
+                trigger_off_ms = now + glb.trig_ms;
             }
         }
         lfo_phase_raw[i] = raw;
@@ -174,8 +191,8 @@ static void lfo_update(void)
             if (c->dest & DEST_GATE) gate_set(i, value >= 32768);
         }
         uint8_t cc_value = (uint8_t)(out >> 9);
-        if (cc_value != cc_last[i] && now - cc_sent_ms[i] >= 10) {
-            uint8_t msg[3] = {(uint8_t)(0xb0 | i), c->cc, cc_value};
+        if (cc_value != cc_last[i] && now - cc_sent_ms[i] >= glb.cc_ms) {
+            uint8_t msg[3] = {(uint8_t)(0xb0 | (glb.midi_base + i)), c->cc, cc_value};
             midi_send(msg, 3);
             cc_last[i] = cc_value;
             cc_sent_ms[i] = now;
@@ -232,26 +249,58 @@ static bool status_active(void)
 
 static void slots_rescan(void)
 {
-    for (int slot = 0; slot < PROJECT_COUNT; slot++)
+    for (int slot = 0; slot < PROJECT_COUNT; slot++) {
         slot_state[slot] = (uint8_t)project_peek(slot);
+        panel_poll(); /* a full catalog scan outlasts several scan buffers */
+    }
 }
 
-/* Replace the workspace content with a project's. Outputs are silenced once;
- * the next lfo_update rewrites whatever the new destinations drive. */
-static void apply_project(const project_t *p)
+/* Silence every output once; the next lfo_update rewrites whatever the new
+ * destinations drive. */
+static void outputs_resync(void)
 {
-    cfg.bpm = p->bpm;
-    for (int i = 0; i < 4; i++) cfg.lfo[i] = p->lfo[i];
     outputs_all_off();
     panel_triggers(0);
     trigger_off_ms = 0;
+}
+
+/* Replace the workspace content with a project's. */
+static void apply_project(const project_t *p)
+{
+    cfg.bpm = p->bpm;
+    for (int t = 0; t < 4; t++) {
+        cfg.active[t] = p->active[t];
+        cfg.present[t] = p->present[t];
+        for (int i = 0; i < PATTERN_COUNT; i++)
+            cfg.pattern[t][i] = p->pattern[t][i];
+    }
+    outputs_resync();
 }
 
 static void workspace_to_project(project_t *p)
 {
     project_defaults(p);
     p->bpm = cfg.bpm;
-    for (int i = 0; i < 4; i++) p->lfo[i] = cfg.lfo[i];
+    for (int t = 0; t < 4; t++) {
+        p->active[t] = cfg.active[t];
+        p->present[t] = cfg.present[t];
+        for (int i = 0; i < PATTERN_COUNT; i++)
+            p->pattern[t][i] = cfg.pattern[t][i];
+    }
+}
+
+/* PATTERN-001: make pattern p the track's active pattern. Selecting a slot
+ * marks it present; a never-used slot activates with the track's default
+ * configuration. Other patterns are untouched (PATTERN-002). */
+static void pattern_select(int t, int p)
+{
+    if (cfg.active[t] != p) {
+        cfg.active[t] = (uint8_t)p;
+        outputs_resync();
+    }
+    cfg.present[t] |= (uint16_t)(1u << p);
+    cfg.selected = (uint8_t)t;
+    set_status("PATTERN", t * 16 + p);
 }
 
 /* PROJECT-001: new project = declared defaults in the workspace; no slot is
@@ -263,6 +312,21 @@ static void project_new(void)
     apply_project(&p);
     cur_slot = SLOT_NONE;
     set_status("NEW", -1);
+}
+
+/* PROJECT-003: the explicit save operation (SHIFT+pad in the manager). */
+static void project_pad_save(int slot)
+{
+    project_t p;
+    workspace_to_project(&p);
+    project_status_t status = project_save(slot, &p);
+    slot_state[slot] = (uint8_t)project_peek(slot);
+    if (status == PROJECT_OK) {
+        cur_slot = (uint8_t)slot;
+        set_status("SAVED", slot);
+    } else {
+        set_status(status == PROJECT_UNAVAIL ? "NO SLOT" : "SAVE ERR", slot);
+    }
 }
 
 static void project_pad(int slot)
@@ -277,16 +341,6 @@ static void project_pad(int slot)
             set_status("DELETED", slot);
         } else {
             set_status("NO SLOT", slot);
-        }
-    } else if (panel_down(SW_SHIFT)) { /* PROJECT-003: explicit save */
-        workspace_to_project(&p);
-        status = project_save(slot, &p);
-        slot_state[slot] = (uint8_t)project_peek(slot);
-        if (status == PROJECT_OK) {
-            cur_slot = (uint8_t)slot;
-            set_status("SAVED", slot);
-        } else {
-            set_status(status == PROJECT_UNAVAIL ? "NO SLOT" : "SAVE ERR", slot);
         }
     } else { /* PROJECT-002: load; the workspace is untouched on rejection */
         status = project_load(slot, &p);
@@ -307,17 +361,58 @@ static void project_pad(int slot)
 
 static void toggle_dest(uint8_t bit)
 {
-    lfo_cfg_t *c = &cfg.lfo[cfg.selected];
+    lfo_cfg_t *c = lfo_cur(cfg.selected);
     if (cfg.selected == 3 && bit != DEST_GATE) return; /* D is MIDI + trigger */
     c->dest ^= bit;
     if (!(c->dest & bit)) dest_cleared(cfg.selected, bit);
 }
 
+static bool pad_lookup(uint8_t sw, int *track, int *pad)
+{
+    for (int t = 0; t < 4; t++)
+        for (int p = 0; p < 16; p++)
+            if (pad_switch(t, p) == sw) {
+                *track = t;
+                *pad = p;
+                return true;
+            }
+    return false;
+}
+
+static bool globals_edited(void)
+{
+    return glb.clock_out != glb_entry.clock_out || glb.midi_base != glb_entry.midi_base
+        || glb.trig_ms != glb_entry.trig_ms || glb.cc_ms != glb_entry.cc_ms;
+}
+
 static void handle_events(void)
 {
     panel_event_t ev;
+    int t, p;
     while (panel_event_next(&ev)) {
         if (!ev.down) continue;
+        if (panel_down(SW_SHIFT)) {
+            /* SHIFT-001: SHIFT is a modifier only. Declared combinations:
+             * SHIFT+PROJECT (new project), SHIFT+GLOBAL (commit settings),
+             * SHIFT+pad 1..6 (waveform, normal mode) and SHIFT+pad (save,
+             * project manager). Everything else, including SHIFT chords
+             * with RECORD, causes no state change. */
+            if (panel_down(SW_RECORD)) continue;
+            if (ev.sw == SW_PROJECT) {
+                project_new();
+            } else if (ev.sw == SW_GLOBAL) {
+                settings_save(&cfg);
+                set_status("SETTINGS", -1);
+            } else if (pad_lookup(ev.sw, &t, &p)) {
+                if (mode == MODE_PROJECT) {
+                    project_pad_save(t * 16 + p);
+                } else if (mode == MODE_NORMAL && p < WAVE_COUNT) {
+                    cfg.selected = (uint8_t)t;
+                    lfo_cur(t)->wave = (uint8_t)p;
+                }
+            }
+            continue;
+        }
         switch (ev.sw) {
         case SW_PLAY: transport_start(); continue;
         case SW_STOP: transport_stop(); continue;
@@ -331,72 +426,115 @@ static void handle_events(void)
             tap_last_ms = now;
             continue;
         }
-        case SW_TRACK_A: cfg.selected = 0; continue;
-        case SW_TRACK_B: cfg.selected = 1; continue;
-        case SW_TRACK_C: cfg.selected = 2; continue;
-        case SW_TRACK_D: cfg.selected = 3; continue;
-        case SW_MOD: toggle_dest(DEST_MOD); continue;
-        case SW_PITCH: toggle_dest(DEST_PITCH); continue;
-        case SW_GATE: toggle_dest(DEST_GATE); continue;
-        case SW_GLOBAL: settings_save(&cfg); continue;
-        case SW_PROJECT:
-            if (panel_down(SW_SHIFT)) {
-                project_new();
+        case SW_GLOBAL:
+            if (mode == MODE_GLOBAL) { /* documented exit commits any edits */
+                if (globals_edited()) {
+                    globals_save(&glb);
+                    set_status("GLB SAVED", -1);
+                }
+                mode = MODE_NORMAL;
             } else {
-                project_mode = !project_mode;
-                if (project_mode) slots_rescan();
+                glb_entry = glb;
+                mode = MODE_GLOBAL;
             }
+            continue;
+        case SW_PROJECT:
+            if (mode == MODE_GLOBAL) continue; /* GLOBAL is the only exit */
+            if (mode == MODE_PROJECT) {
+                mode = MODE_NORMAL;
+            } else {
+                slots_rescan();
+                mode = MODE_PROJECT;
+            }
+            continue;
+        case SW_PATTERN:
+            if (mode == MODE_GLOBAL) continue; /* GLOBAL is the only exit */
+            mode = mode == MODE_PATTERN ? MODE_NORMAL : MODE_PATTERN;
             continue;
         default: break;
         }
-        for (int t = 0; t < 4; t++)
-            for (int p = 0; p < 16; p++)
-                if (pad_switch(t, p) == ev.sw) {
-                    if (project_mode) {
-                        project_pad(t * 16 + p);
-                    } else {
-                        cfg.selected = (uint8_t)t;
-                        if (panel_down(SW_SHIFT)) {
-                            if (p < WAVE_COUNT) cfg.lfo[t].wave = (uint8_t)p;
-                        } else {
-                            cfg.lfo[t].div = (uint8_t)p;
-                        }
-                    }
-                }
+        if (mode == MODE_NORMAL) {
+            switch (ev.sw) {
+            case SW_TRACK_A: cfg.selected = 0; continue;
+            case SW_TRACK_B: cfg.selected = 1; continue;
+            case SW_TRACK_C: cfg.selected = 2; continue;
+            case SW_TRACK_D: cfg.selected = 3; continue;
+            case SW_MOD: toggle_dest(DEST_MOD); continue;
+            case SW_PITCH: toggle_dest(DEST_PITCH); continue;
+            case SW_GATE: toggle_dest(DEST_GATE); continue;
+            default: break;
+            }
+            if (pad_lookup(ev.sw, &t, &p)) {
+                cfg.selected = (uint8_t)t;
+                lfo_cur(t)->div = (uint8_t)p;
+            }
+        } else if (mode == MODE_PROJECT) {
+            if (pad_lookup(ev.sw, &t, &p)) project_pad(t * 16 + p);
+        } else if (mode == MODE_PATTERN) {
+            if (pad_lookup(ev.sw, &t, &p)) pattern_select(t, p);
+        }
+        /* MODE_GLOBAL: pads, track and destination keys are inert. */
     }
-    lfo_cfg_t *c = &cfg.lfo[cfg.selected];
-    int d;
-    if ((d = panel_encoder_take(ENC_TEMPO))) {
-        int bpm = cfg.bpm + d;
+    /* Encoders: always drain the detent counters, then route by mode. With
+     * SHIFT held nothing is edited (SHIFT+encoder is undeclared). */
+    int d_tempo = panel_encoder_take(ENC_TEMPO);
+    int d_swing = panel_encoder_take(ENC_SWING);
+    int d1 = panel_encoder_take(ENC_PARAM1);
+    int d2 = panel_encoder_take(ENC_PARAM2);
+    int d3 = panel_encoder_take(ENC_PARAM3);
+    int d4 = panel_encoder_take(ENC_PARAM4);
+    if (panel_down(SW_SHIFT)) return;
+    if (mode == MODE_GLOBAL) {
+        /* GLOBAL-002: edits apply to behavior immediately and are committed
+         * by the GLOBAL exit. */
+        if (d1) glb.clock_out = d1 > 0 ? 1 : 0;
+        if (d2) {
+            int v = glb.midi_base + d2;
+            glb.midi_base = (uint8_t)(v < 0 ? 0 : v > 12 ? 12 : v);
+        }
+        if (d3) {
+            int v = glb.trig_ms + d3;
+            glb.trig_ms = (uint8_t)(v < 5 ? 5 : v > 100 ? 100 : v);
+        }
+        if (d4) {
+            int v = glb.cc_ms + d4;
+            glb.cc_ms = (uint8_t)(v < 1 ? 1 : v > 50 ? 50 : v);
+        }
+        return;
+    }
+    if (mode != MODE_NORMAL) return; /* detents drained, nothing edited */
+    lfo_cfg_t *c = lfo_cur(cfg.selected);
+    if (d_tempo) {
+        int bpm = cfg.bpm + d_tempo;
         cfg.bpm = (uint16_t)(bpm < 20 ? 20 : bpm > 300 ? 300 : bpm);
     }
-    if ((d = panel_encoder_take(ENC_SWING))) {
-        int cc = c->cc + d;
+    if (d_swing) {
+        int cc = c->cc + d_swing;
         c->cc = (uint8_t)(cc < 0 ? 0 : cc > 127 ? 127 : cc);
     }
-    if ((d = panel_encoder_take(ENC_PARAM1))) {
-        int wave = c->wave + d;
+    if (d1) {
+        int wave = c->wave + d1;
         c->wave = (uint8_t)(wave < 0 ? 0 : wave >= WAVE_COUNT ? WAVE_COUNT - 1 : wave);
     }
-    if ((d = panel_encoder_take(ENC_PARAM2))) {
-        int div = c->div + d;
+    if (d2) {
+        int div = c->div + d2;
         c->div = (uint8_t)(div < 0 ? 0 : div >= DIV_COUNT ? DIV_COUNT - 1 : div);
     }
-    if ((d = panel_encoder_take(ENC_PARAM3))) {
-        int depth = c->depth + d;
+    if (d3) {
+        int depth = c->depth + d3;
         c->depth = (uint8_t)(depth < 0 ? 0 : depth > 100 ? 100 : depth);
     }
-    if ((d = panel_encoder_take(ENC_PARAM4))) {
-        c->phase = (uint8_t)((c->phase + d) & 15);
+    if (d4) {
+        c->phase = (uint8_t)((c->phase + d4) & 15);
     }
 }
 
 static void update_leds(void)
 {
     uint32_t rows[8];
-    if (project_mode) {
+    bool blink = (g_ms >> 8) & 1;
+    if (mode == MODE_PROJECT) {
         /* Pad LEDs become the slot grid: lit = populated, blink = current. */
-        bool blink = (g_ms >> 8) & 1;
         for (int t = 0; t < 4; t++) {
             uint32_t cols = 0;
             for (int p = 0; p < 16; p++) {
@@ -409,24 +547,35 @@ static void update_leds(void)
             rows[t * 2 + 1] = 0;
         }
         rows[6] |= 1u << 17; /* PROJECT button LED */
-        panel_led_columns(rows);
-        bool beat = pos_tick % 24 < 2;
-        panel_transport_leds(beat, !playing, ext_active(), playing);
-        return;
+    } else if (mode == MODE_PATTERN) {
+        /* Pad LEDs become the pattern grid: lit = present, blink = active. */
+        for (int t = 0; t < 4; t++) {
+            uint32_t cols = 0;
+            for (int p = 0; p < 16; p++) {
+                bool on = (cfg.present[t] >> p) & 1;
+                if (p == cfg.active[t]) on = blink;
+                if (on) cols |= 2u << p;
+            }
+            rows[t * 2] = cols;
+            rows[t * 2 + 1] = 0;
+        }
+        rows[6] |= 1u << 18; /* PATTERN button LED */
+    } else {
+        for (int i = 0; i < 4; i++) {
+            /* Each LFO's row of pads is a live level bar. */
+            int lit = (lfo_out[i] >> 12) + 1; /* 1..16 pads */
+            uint32_t cols = ((1u << lit) - 1) << 1;
+            if (i == cfg.selected) cols |= 1; /* track select LED, column 0 */
+            rows[i * 2] = cols;
+            rows[i * 2 + 1] = 0;
+        }
+        /* Destination LEDs for the edited LFO (row 0 columns 18..20). */
+        const lfo_cfg_t *c = lfo_cur(cfg.selected);
+        if (c->dest & DEST_GATE) rows[0] |= 1u << 18;
+        if (c->dest & DEST_PITCH) rows[0] |= 1u << 19;
+        if (c->dest & DEST_MOD) rows[0] |= 1u << 20;
+        if (mode == MODE_GLOBAL) rows[4] |= 1u << 19; /* GLOBAL button LED */
     }
-    for (int i = 0; i < 4; i++) {
-        /* Each LFO's row of pads is a live level bar. */
-        int lit = (lfo_out[i] >> 12) + 1; /* 1..16 pads */
-        uint32_t cols = ((1u << lit) - 1) << 1;
-        if (i == cfg.selected) cols |= 1; /* track select LED, column 0 */
-        rows[i * 2] = cols;
-        rows[i * 2 + 1] = 0;
-    }
-    /* Destination LEDs for the edited LFO (row 0 columns 18..20). */
-    const lfo_cfg_t *c = &cfg.lfo[cfg.selected];
-    if (c->dest & DEST_GATE) rows[0] |= 1u << 18;
-    if (c->dest & DEST_PITCH) rows[0] |= 1u << 19;
-    if (c->dest & DEST_MOD) rows[0] |= 1u << 20;
     panel_led_columns(rows);
     bool beat = pos_tick % 24 < 2;
     panel_transport_leds(beat, !playing, ext_active(), playing);
@@ -435,7 +584,7 @@ static void update_leds(void)
 static void draw_wave_preview(int x, int y, int w, int h, int lfo)
 {
     for (int i = 0; i < w; i++) {
-        uint16_t phase = (uint16_t)((i << 16) / w + cfg.lfo[lfo].phase * 4096u);
+        uint16_t phase = (uint16_t)((i << 16) / w + lfo_cur(lfo)->phase * 4096u);
         int v = wave_value(lfo, phase) * (h - 1) / 65535;
         fb_pixel(x + i, y + h - 1 - v, 9);
     }
@@ -456,6 +605,7 @@ static void draw_projects(void)
 {
     fb_clear();
     fb_text(2, 1, "PROJECTS", 15);
+    panel_poll(); /* redraws outlast the 16-frame scan buffer: keep decoding */
     if (status_active()) draw_status(120, 1);
     int avail = project_slots_available();
     for (int t = 0; t < 4; t++) {
@@ -471,21 +621,73 @@ static void draw_projects(void)
             else fb_fill(x, y + 5, 12, 1, 2); /* empty: a faint baseline */
             if (slot == cur_slot) fb_fill(x, y, 12, 1, 15);
         }
+        panel_poll();
     }
     fb_text(2, 53, "PAD LOAD  SHIFT+PAD SAVE  REC+PAD DEL", 5);
     display_flush();
 }
 
+static void draw_patterns(void)
+{
+    fb_clear();
+    fb_text(2, 1, "PATTERNS", 15);
+    panel_poll();
+    if (status_active()) draw_status(120, 1);
+    for (int t = 0; t < 4; t++) {
+        int y = 13 + t * 9;
+        fb_text(2, y, (const char[]){(char)('A' + t), 0},
+                t == cfg.selected ? 15 : 8);
+        for (int p = 0; p < 16; p++) {
+            int x = 12 + p * 15;
+            if ((cfg.present[t] >> p) & 1) fb_fill(x, y, 12, 6, 9);
+            else fb_fill(x, y + 5, 12, 1, 2); /* unused: a faint baseline */
+            if (p == cfg.active[t]) fb_fill(x, y, 12, 1, 15);
+        }
+        panel_poll();
+    }
+    fb_text(2, 53, "PAD SETS THE ACTIVE PATTERN", 5);
+    display_flush();
+}
+
+static void draw_globals(void)
+{
+    fb_clear();
+    fb_text(2, 1, "GLOBAL", 15);
+    panel_poll();
+    if (status_active()) draw_status(120, 1);
+    fb_text(2, 14, "P1 CLOCK OUT", 8);
+    fb_text(104, 14, glb.clock_out ? "ON" : "OFF", 15);
+    fb_text(2, 24, "P2 MIDI CH", 8);
+    fb_number(104, 24, glb.midi_base + 1, 15);
+    fb_text(122, 24, "-", 8);
+    fb_number(130, 24, glb.midi_base + 4, 15);
+    fb_text(2, 34, "P3 TRIG MS", 8);
+    fb_number(104, 34, glb.trig_ms, 15);
+    fb_text(2, 44, "P4 CC MS", 8);
+    fb_number(104, 44, glb.cc_ms, 15);
+    fb_text(2, 56, "GLOBAL EXITS AND COMMITS EDITS", 5);
+    display_flush();
+}
+
 static void draw_ui(void)
 {
-    if (project_mode) {
+    if (mode == MODE_PROJECT) {
         draw_projects();
         return;
     }
-    const lfo_cfg_t *c = &cfg.lfo[cfg.selected];
+    if (mode == MODE_PATTERN) {
+        draw_patterns();
+        return;
+    }
+    if (mode == MODE_GLOBAL) {
+        draw_globals();
+        return;
+    }
+    const lfo_cfg_t *c = lfo_cur(cfg.selected);
     uint16_t bpm_shown = cfg.bpm;
     if (ext_active()) bpm_shown = (uint16_t)(2500 / ext_gap_ms);
     fb_clear();
+    panel_poll(); /* redraws outlast the 16-frame scan buffer: keep decoding */
     fb_text(2, 1, "LFOS", 15);
     fb_number(60, 1, bpm_shown, 12);
     fb_text(84, 1, "BPM", 8);
@@ -509,7 +711,7 @@ static void draw_ui(void)
 
     /* One lane per LFO: name, wave, division, CC and a live level bar. */
     for (int i = 0; i < 4; i++) {
-        const lfo_cfg_t *lc = &cfg.lfo[i];
+        const lfo_cfg_t *lc = lfo_cur(i);
         int y = 24 + i * 8;
         uint8_t bright = i == cfg.selected ? 15 : 6;
         fb_text(2, y, (const char[]){(char)('A' + i), 0}, bright);
@@ -520,10 +722,17 @@ static void draw_ui(void)
         int width = lfo_out[i] * 100 / 65535;
         fb_fill(116, y + 1, 100, 1, 3);
         if (width) fb_fill(116, y, width, 4, i == cfg.selected ? 13 : 7);
+        panel_poll();
     }
     draw_wave_preview(222, 26, 32, 28, cfg.selected);
-    if (status_active()) draw_status(2, 57);
-    else fb_text(2, 57, "GLOBAL SAVES", 5);
+    if (status_active()) {
+        draw_status(2, 57);
+    } else {
+        fb_text(2, 57, "PAT", 5);
+        for (int t = 0; t < 4; t++)
+            fb_number(26 + t * 14, 57, cfg.active[t] + 1,
+                      t == cfg.selected ? 12 : 5);
+    }
     display_flush();
 }
 
@@ -533,6 +742,7 @@ static void power_off(void)
     outputs_all_off();
     panel_triggers(0);
     settings_save(&cfg);
+    globals_save(&glb);
     fb_clear();
     fb_text(2, 28, "POWERED OFF", 12);
     display_flush();
@@ -547,6 +757,7 @@ static void normal_main(void)
 {
     storage_init();
     settings_load(&cfg);
+    globals_load(&glb);
     display_init();
     outputs_init();
     panel_init();

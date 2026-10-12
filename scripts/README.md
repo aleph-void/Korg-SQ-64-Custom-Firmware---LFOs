@@ -30,10 +30,11 @@ off.
 | `03-destinations-and-trigger.json` | MOD/PITCH/GATE destination toggles, LFO D cycle trigger | PITCH adds the A pitch-CV sweep, GATE toggles the A gate jack at half-cycle; on LFO D, GATE pulses trigger indicator 1 once per cycle; the GATE/PITCH/MOD button LEDs track the edited LFO |
 | `04-midi-cc-assignment.json` | Per-LFO MIDI CC numbers on the CC encoder (swing position) | The CC readout on the display moves from 11 to 74 for LFO C, then LFO A joins it on CC 74 (hear/see doubled controllers downstream) |
 | `05-external-midi-clock.json` | Automatic external MIDI clock sync | After MIDI start, a bar and a half of injected clock at ~125 BPM: the header flips to **EXT** with the measured BPM and every LFO follows the external ticks; a second after the ticks stop it falls back to **INT** |
-| `06-save-and-persistence.json` | GLOBAL settings commit, power-button shutdown, persistence | LFO B is set to S+H at 1/8T, committed, powered off, rebooted: B comes back selected with the committed wave and rate |
+| `06-save-and-persistence.json` | SHIFT+GLOBAL settings commit, power-button shutdown, persistence | LFO B is set to S+H at 1/8T, committed with SHIFT+GLOBAL, powered off, rebooted: B comes back selected with the committed wave and rate |
 | `07-version-mode.json` | GLOBAL boot chord | `LFOS SQ-64 / VERSION 1.0 / ORIGINAL SYNCED-LFO FIRMWARE`, then a clean power-off |
 | `08-update-mode-install.json` | GLOBAL+PATTERN boot chord and the full VUP self-updater | See below |
 | `09-project-management.json` | The PROJECT manager: save, new project, load, empty-slot report, delete | LFO B is set to square, saved to slot A1 (its pad lights and blinks as current); SHIFT+PROJECT resets the workspace to the sine/tri defaults; loading A1 brings the square back; empty slot C5 reports `EMPTY C5` without changing anything; RECORD+pad deletes A1 (its pad goes dark); PROJECT returns to the lanes |
+| `10-patterns-and-global.json` | The PATTERN selector and the GLOBAL settings mode | Pattern B2 activates with the default triangle and is squared off with the wave encoder; switching B1/B2 flips the lane between the two stored shapes; GLOBAL opens the settings page, the CC channels move to 5–8 and the trigger pulse widens, GLOBAL commits (`GLB SAVED`); SHIFT+GLOBAL commits the workspace |
 
 ## Notes on script 08 (updater)
 

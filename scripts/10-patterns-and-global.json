@@ -1,0 +1,142 @@
+{
+  "format": "sq64-ui-script",
+  "version": 1,
+  "name": "LFOs 10: patterns and global settings",
+  "actions": [
+    {
+      "type": "power-on",
+      "mode": "normal"
+    },
+    {
+      "type": "wait",
+      "ms": 20000
+    },
+    {
+      "type": "press",
+      "control": "pattern",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 2000
+    },
+    {
+      "type": "press",
+      "control": "B2",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 2000
+    },
+    {
+      "type": "press",
+      "control": "pattern",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 1000
+    },
+    {
+      "type": "encoder",
+      "control": "param1",
+      "delta": 4
+    },
+    {
+      "type": "wait",
+      "ms": 2500
+    },
+    {
+      "type": "press",
+      "control": "pattern",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 1000
+    },
+    {
+      "type": "press",
+      "control": "B1",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 2000
+    },
+    {
+      "type": "press",
+      "control": "B2",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 2000
+    },
+    {
+      "type": "press",
+      "control": "pattern",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 1500
+    },
+    {
+      "type": "press",
+      "control": "global",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 2000
+    },
+    {
+      "type": "encoder",
+      "control": "param2",
+      "delta": 4
+    },
+    {
+      "type": "wait",
+      "ms": 2500
+    },
+    {
+      "type": "encoder",
+      "control": "param3",
+      "delta": 30
+    },
+    {
+      "type": "wait",
+      "ms": 2500
+    },
+    {
+      "type": "press",
+      "control": "global",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 2000
+    },
+    {
+      "type": "button",
+      "control": "shift",
+      "down": true
+    },
+    {
+      "type": "press",
+      "control": "global",
+      "ms": 150
+    },
+    {
+      "type": "button",
+      "control": "shift",
+      "down": false
+    },
+    {
+      "type": "wait",
+      "ms": 2000
+    }
+  ]
+}
