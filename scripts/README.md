@@ -1,0 +1,53 @@
+# UI demo scripts
+
+Portable `sq64-ui-script` files for the browser workbench's **UI scripts**
+panel. Together they demonstrate every major function of this firmware in the
+emulator — no hardware involved.
+
+## Running a script
+
+1. In `../../../../emulator/web`: `npm ci && npm run dev`, open the printed
+   URL and expand **Browser emulator**.
+2. Load `build/lfos.vsb` (build it first with `make`).
+3. Expand **UI scripts** below the instrument panel, choose **Import
+   script**, select one of these files, then **Run script**.
+
+Scripts drive the normal emulator input path, so you can watch the pad-LED
+level bars, the display lanes with the live waveform preview, and the
+top-edge mod/pitch/gate/trigger indicators animate in sync. Each script that
+boots the instrument waits **20 s** after `power-on` for the firmware to
+start scanning the panel; on a slow machine or a throttled background tab,
+raise the `wait` after each `power-on` before reporting a problem. An
+instance keeps running after a script finishes unless the script powers it
+off.
+
+## The scripts
+
+| Script | Demonstrates | Watch for |
+| --- | --- | --- |
+| `01-synced-lfos-and-transport.json` | Free-running synced LFOs, PLAY resync, tap tempo, tempo encoder | All four LED bars undulate from boot; PLAY restarts every phase together; four TAPs ~300 ms apart speed everything up at once; STOP keeps the LFOs running but stops the MIDI clock |
+| `02-waveforms-and-rates.json` | Pads = rate division, SHIFT+pad = waveform, param encoders 1–4 (wave, rate, depth, phase) | Lane B flutters at 1/32, sweeps at 1 bar, squares off, returns to sine; depth shrinks the bar; phase 8/16 puts B a half-cycle against A |
+| `03-destinations-and-trigger.json` | MOD/PITCH/GATE destination toggles, LFO D cycle trigger | PITCH adds the A pitch-CV sweep, GATE toggles the A gate jack at half-cycle; on LFO D, GATE pulses trigger indicator 1 once per cycle; the GATE/PITCH/MOD button LEDs track the edited LFO |
+| `04-midi-cc-assignment.json` | Per-LFO MIDI CC numbers on the CC encoder (swing position) | The CC readout on the display moves from 11 to 74 for LFO C, then LFO A joins it on CC 74 (hear/see doubled controllers downstream) |
+| `05-external-midi-clock.json` | Automatic external MIDI clock sync | After MIDI start, a bar and a half of injected clock at ~125 BPM: the header flips to **EXT** with the measured BPM and every LFO follows the external ticks; a second after the ticks stop it falls back to **INT** |
+| `06-save-and-persistence.json` | GLOBAL settings commit, power-button shutdown, persistence | LFO B is set to S+H at 1/8T, committed, powered off, rebooted: B comes back selected with the committed wave and rate |
+| `07-version-mode.json` | GLOBAL boot chord | `LFOS SQ-64 / VERSION 1.0 / ORIGINAL SYNCED-LFO FIRMWARE`, then a clean power-off |
+| `08-update-mode-install.json` | GLOBAL+PATTERN boot chord and the full VUP self-updater | See below |
+
+## Notes on script 08 (updater)
+
+Before running it, expand **Send a second firmware image** and select a
+complete `.VSB` there (for a harmless demonstration, select
+`build/lfos.vsb` itself — `allowOlder` is set because reinstalling the
+same version is not an upgrade). The `firmware-update` action sends that
+file through the firmware's own updater: the display walks through
+`UPDATE MODE / WAITING FOR HOST` → `RECEIVING UPDATE` →
+`PROGRAMMING / DO NOT REMOVE POWER` → `UPDATE COMPLETE / RESTART THE
+DEVICE`. The action waits up to two minutes for USB enumeration first, so
+the short startup wait is intentional. The workbench's critical flash-safety
+guards stay active throughout. Installation writes the emulated flash only;
+the booted image stays loaded, so a later `power-on` reboots the original.
+
+These scripts are demonstrations, not assertions — the repeatable behavioral
+checks live in `tools/headless_test.py`, `tools/browser_panel_test.mjs` and
+`tools/browser_update_test.mjs` (see `make test`).

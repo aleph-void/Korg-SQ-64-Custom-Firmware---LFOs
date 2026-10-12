@@ -1,0 +1,60 @@
+{
+  "format": "sq64-ui-script",
+  "version": 1,
+  "name": "LFOs 04: per-LFO MIDI CC numbers (CC encoder)",
+  "actions": [
+    {
+      "type": "power-on",
+      "mode": "normal"
+    },
+    {
+      "type": "wait",
+      "ms": 20000
+    },
+    {
+      "type": "press",
+      "control": "trackC",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 1000
+    },
+    {
+      "type": "encoder",
+      "control": "swing",
+      "delta": 63
+    },
+    {
+      "type": "wait",
+      "ms": 3000
+    },
+    {
+      "type": "encoder",
+      "control": "swing",
+      "delta": -10
+    },
+    {
+      "type": "wait",
+      "ms": 3000
+    },
+    {
+      "type": "press",
+      "control": "trackA",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 1000
+    },
+    {
+      "type": "encoder",
+      "control": "swing",
+      "delta": 73
+    },
+    {
+      "type": "wait",
+      "ms": 3000
+    }
+  ]
+}

@@ -1,0 +1,106 @@
+{
+  "format": "sq64-ui-script",
+  "version": 1,
+  "name": "LFOs 02: waveforms (SHIFT+pad), rate divisions (pads) and encoders",
+  "actions": [
+    {
+      "type": "power-on",
+      "mode": "normal"
+    },
+    {
+      "type": "wait",
+      "ms": 20000
+    },
+    {
+      "type": "press",
+      "control": "trackB",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 1000
+    },
+    {
+      "type": "press",
+      "control": "B16",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 4000
+    },
+    {
+      "type": "press",
+      "control": "B4",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 4000
+    },
+    {
+      "type": "button",
+      "control": "shift",
+      "down": true
+    },
+    {
+      "type": "press",
+      "control": "B5",
+      "ms": 150
+    },
+    {
+      "type": "button",
+      "control": "shift",
+      "down": false
+    },
+    {
+      "type": "wait",
+      "ms": 4000
+    },
+    {
+      "type": "encoder",
+      "control": "param1",
+      "delta": -4
+    },
+    {
+      "type": "wait",
+      "ms": 3000
+    },
+    {
+      "type": "encoder",
+      "control": "param2",
+      "delta": 4
+    },
+    {
+      "type": "wait",
+      "ms": 3000
+    },
+    {
+      "type": "encoder",
+      "control": "param3",
+      "delta": -60
+    },
+    {
+      "type": "wait",
+      "ms": 4000
+    },
+    {
+      "type": "encoder",
+      "control": "param3",
+      "delta": 60
+    },
+    {
+      "type": "wait",
+      "ms": 2000
+    },
+    {
+      "type": "encoder",
+      "control": "param4",
+      "delta": 8
+    },
+    {
+      "type": "wait",
+      "ms": 4000
+    }
+  ]
+}

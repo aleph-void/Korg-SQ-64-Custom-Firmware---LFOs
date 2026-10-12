@@ -1,0 +1,76 @@
+{
+  "format": "sq64-ui-script",
+  "version": 1,
+  "name": "LFOs 06: GLOBAL commit, shutdown, persistence",
+  "actions": [
+    {
+      "type": "power-on",
+      "mode": "normal"
+    },
+    {
+      "type": "wait",
+      "ms": 20000
+    },
+    {
+      "type": "press",
+      "control": "trackB",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 500
+    },
+    {
+      "type": "press",
+      "control": "B13",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 1000
+    },
+    {
+      "type": "button",
+      "control": "shift",
+      "down": true
+    },
+    {
+      "type": "press",
+      "control": "B6",
+      "ms": 150
+    },
+    {
+      "type": "button",
+      "control": "shift",
+      "down": false
+    },
+    {
+      "type": "wait",
+      "ms": 1500
+    },
+    {
+      "type": "press",
+      "control": "global",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 1500
+    },
+    {
+      "type": "power-off"
+    },
+    {
+      "type": "wait",
+      "ms": 1000
+    },
+    {
+      "type": "power-on",
+      "mode": "normal"
+    },
+    {
+      "type": "wait",
+      "ms": 20000
+    }
+  ]
+}

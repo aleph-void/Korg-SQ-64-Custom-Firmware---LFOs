@@ -1,0 +1,82 @@
+{
+  "format": "sq64-ui-script",
+  "version": 1,
+  "name": "LFOs 01: synced LFOs, transport and tap tempo",
+  "actions": [
+    {
+      "type": "power-on",
+      "mode": "normal"
+    },
+    {
+      "type": "wait",
+      "ms": 20000
+    },
+    {
+      "type": "wait",
+      "ms": 6000
+    },
+    {
+      "type": "press",
+      "control": "play",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 6000
+    },
+    {
+      "type": "press",
+      "control": "tap",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 300
+    },
+    {
+      "type": "press",
+      "control": "tap",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 300
+    },
+    {
+      "type": "press",
+      "control": "tap",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 300
+    },
+    {
+      "type": "press",
+      "control": "tap",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 6000
+    },
+    {
+      "type": "encoder",
+      "control": "tempo",
+      "delta": -30
+    },
+    {
+      "type": "wait",
+      "ms": 6000
+    },
+    {
+      "type": "press",
+      "control": "stop",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 2000
+    }
+  ]
+}

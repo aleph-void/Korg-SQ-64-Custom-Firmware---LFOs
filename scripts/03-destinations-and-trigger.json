@@ -1,0 +1,83 @@
+{
+  "format": "sq64-ui-script",
+  "version": 1,
+  "name": "LFOs 03: MOD/PITCH/GATE destinations and the LFO D trigger",
+  "actions": [
+    {
+      "type": "power-on",
+      "mode": "normal"
+    },
+    {
+      "type": "wait",
+      "ms": 20000
+    },
+    {
+      "type": "press",
+      "control": "trackA",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 1000
+    },
+    {
+      "type": "press",
+      "control": "pitch",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 4000
+    },
+    {
+      "type": "press",
+      "control": "gate",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 6000
+    },
+    {
+      "type": "press",
+      "control": "pitch",
+      "ms": 150
+    },
+    {
+      "type": "press",
+      "control": "gate",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 1000
+    },
+    {
+      "type": "press",
+      "control": "trackD",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 1000
+    },
+    {
+      "type": "press",
+      "control": "gate",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 8000
+    },
+    {
+      "type": "press",
+      "control": "gate",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 1000
+    }
+  ]
+}
