@@ -1,7 +1,7 @@
 {
   "format": "sq64-ui-script",
   "version": 1,
-  "name": "LFOs 03: MOD/PITCH/GATE destinations and the LFO D trigger",
+  "name": "LFOs 03: destination routing in the PITCH/GATE/MOD modes and the LFO D trigger",
   "actions": [
     {
       "type": "power-on",
@@ -27,6 +27,15 @@
     },
     {
       "type": "wait",
+      "ms": 1000
+    },
+    {
+      "type": "encoder",
+      "control": "param1",
+      "delta": 1
+    },
+    {
+      "type": "wait",
       "ms": 4000
     },
     {
@@ -36,7 +45,25 @@
     },
     {
       "type": "wait",
+      "ms": 1000
+    },
+    {
+      "type": "encoder",
+      "control": "param1",
+      "delta": 1
+    },
+    {
+      "type": "wait",
       "ms": 6000
+    },
+    {
+      "type": "encoder",
+      "control": "param1",
+      "delta": -1
+    },
+    {
+      "type": "wait",
+      "ms": 1000
     },
     {
       "type": "press",
@@ -44,13 +71,18 @@
       "ms": 150
     },
     {
-      "type": "press",
-      "control": "gate",
-      "ms": 150
+      "type": "encoder",
+      "control": "param1",
+      "delta": -1
     },
     {
       "type": "wait",
       "ms": 1000
+    },
+    {
+      "type": "press",
+      "control": "pitch",
+      "ms": 150
     },
     {
       "type": "press",
@@ -67,8 +99,22 @@
       "ms": 150
     },
     {
+      "type": "encoder",
+      "control": "param1",
+      "delta": 1
+    },
+    {
       "type": "wait",
       "ms": 8000
+    },
+    {
+      "type": "encoder",
+      "control": "param1",
+      "delta": -1
+    },
+    {
+      "type": "wait",
+      "ms": 1000
     },
     {
       "type": "press",

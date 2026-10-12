@@ -9,21 +9,34 @@
 
 int memcmp(const void *a, const void *b, size_t n); /* startup.c */
 
-#define SETTINGS_MAGIC 0x324f464cu /* "LFO2" */
-#define PROJECT_MAGIC  0x3250464cu /* "LFP2" */
+#define SETTINGS_MAGIC 0x334f464cu /* "LFO3" */
+#define PROJECT_MAGIC  0x3350464cu /* "LFP3" */
 #define GLOBALS_MAGIC  0x3147464cu /* "LFG1" */
 
-/* Supported older record formats (STORE-006): one configuration per track,
- * no patterns. They load as pattern 1 of each track; saves write v2 only. */
+/* Supported older record formats (STORE-006). v2 has no step masks or swing:
+ * it loads with every step on and neutral swing. v1 additionally has one
+ * configuration per track, loading as pattern 1. Saves write v3 only. */
+#define SETTINGS_V2_MAGIC 0x324f464cu /* "LFO2" */
+#define PROJECT_V2_MAGIC  0x3250464cu /* "LFP2" */
 #define SETTINGS_V1_MAGIC 0x314f464cu /* "LFO1" */
 #define PROJECT_V1_MAGIC  0x3150464cu /* "LFP1" */
+
+/* The v1/v2 per-pattern configuration: no step mask. */
+typedef struct {
+    uint8_t wave;
+    uint8_t div;
+    uint8_t depth;
+    uint8_t phase;
+    uint8_t cc;
+    uint8_t dest;
+} lfo_cfg_v2_t;
 
 typedef struct {
     uint32_t magic;
     uint16_t bpm;
     uint8_t selected;
     uint8_t reserved;
-    lfo_cfg_t lfo[4];
+    lfo_cfg_v2_t lfo[4];
     uint32_t hash;
 } settings_v1_t;
 
@@ -31,9 +44,30 @@ typedef struct {
     uint32_t magic;
     uint16_t bpm;
     uint8_t reserved[2];
-    lfo_cfg_t lfo[4];
+    lfo_cfg_v2_t lfo[4];
     uint32_t hash;
 } project_v1_t;
+
+typedef struct {
+    uint32_t magic;
+    uint16_t bpm;
+    uint8_t selected;
+    uint8_t reserved;
+    uint8_t active[4];
+    uint16_t present[4];
+    lfo_cfg_v2_t pattern[4][PATTERN_COUNT];
+    uint32_t hash;
+} settings_v2_t;
+
+typedef struct {
+    uint32_t magic;
+    uint16_t bpm;
+    uint8_t reserved[2];
+    uint8_t active[4];
+    uint16_t present[4];
+    lfo_cfg_v2_t pattern[4][PATTERN_COUNT];
+    uint32_t hash;
+} project_v2_t;
 
 static void cs(bool selected)
 {
@@ -138,18 +172,39 @@ static uint32_t fnv1a(const void *data, uint32_t length)
 
 #define RECORD_HASH(r) fnv1a(r, sizeof(*(r)) - sizeof(uint32_t))
 
+#define STEPS_ALL_ON {0xffff, 0xffff, 0xffff, 0xffff}
 static const lfo_cfg_t LFO_DEFAULTS[4] = {
-    /* wave       div         depth phase cc  dest */
-    {WAVE_SINE, 7 /* 1/4  */, 100, 0, 1,  DEST_MOD}, /* A: mod wheel  */
-    {WAVE_TRI,  5 /* 1/2  */, 100, 4, 2,  DEST_MOD}, /* B: breath, 90 degrees later */
-    {WAVE_RISE, 3 /* 1BAR */, 100, 0, 11, DEST_MOD}, /* C: expression */
-    {WAVE_SNH,  10 /* 1/8 */, 100, 0, 74, 0},        /* D: MIDI only  */
+    /* wave       div         depth phase cc  dest      steps (all on) */
+    {WAVE_SINE, 7 /* 1/4  */, 100, 0, 1,  DEST_MOD, STEPS_ALL_ON}, /* A: mod wheel  */
+    {WAVE_TRI,  5 /* 1/2  */, 100, 4, 2,  DEST_MOD, STEPS_ALL_ON}, /* B: breath, 90 degrees later */
+    {WAVE_RISE, 3 /* 1BAR */, 100, 0, 11, DEST_MOD, STEPS_ALL_ON}, /* C: expression */
+    {WAVE_SNH,  10 /* 1/8 */, 100, 0, 74, 0,        STEPS_ALL_ON}, /* D: MIDI only  */
 };
 
+/* Every value of the step masks is meaningful, so only the scalar fields
+ * constrain validity. */
 static bool lfo_cfg_valid(const lfo_cfg_t *c)
 {
     return c->wave < WAVE_COUNT && c->div < DIV_COUNT && c->depth <= 100
         && c->phase <= 15 && c->cc <= 127 && c->dest <= 7;
+}
+
+static bool lfo_cfg_v2_valid(const lfo_cfg_v2_t *c)
+{
+    return c->wave < WAVE_COUNT && c->div < DIV_COUNT && c->depth <= 100
+        && c->phase <= 15 && c->cc <= 127 && c->dest <= 7;
+}
+
+/* Migrate a v1/v2 configuration: every step on. */
+static void lfo_cfg_from_v2(lfo_cfg_t *c, const lfo_cfg_v2_t *v)
+{
+    c->wave = v->wave;
+    c->div = v->div;
+    c->depth = v->depth;
+    c->phase = v->phase;
+    c->cc = v->cc;
+    c->dest = v->dest;
+    for (int b = 0; b < BAR_COUNT; b++) c->steps[b] = 0xffff;
 }
 
 /* Every pattern of a fresh workspace holds its track's default config;
@@ -177,12 +232,24 @@ static bool patterns_valid(const uint8_t active[4], const uint16_t present[4],
     return true;
 }
 
+static bool patterns_v2_valid(const uint8_t active[4], const uint16_t present[4],
+                              const lfo_cfg_v2_t pattern[4][PATTERN_COUNT])
+{
+    for (int t = 0; t < 4; t++) {
+        if (active[t] >= PATTERN_COUNT || !(present[t] >> active[t] & 1))
+            return false;
+        for (int p = 0; p < PATTERN_COUNT; p++)
+            if (!lfo_cfg_v2_valid(&pattern[t][p])) return false;
+    }
+    return true;
+}
+
 void settings_defaults(settings_t *s)
 {
     s->magic = SETTINGS_MAGIC;
     s->bpm = 120;
     s->selected = 0;
-    s->reserved = 0;
+    s->swing = SWING_MIN;
     patterns_defaults(s->active, s->present, s->pattern);
     s->hash = RECORD_HASH(s);
 }
@@ -191,14 +258,15 @@ static bool settings_valid(const settings_t *s)
 {
     if (s->magic != SETTINGS_MAGIC || s->hash != RECORD_HASH(s)) return false;
     if (s->bpm < 20 || s->bpm > 300 || s->selected > 3) return false;
+    if (s->swing < SWING_MIN || s->swing > SWING_MAX) return false;
     return patterns_valid(s->active, s->present, s->pattern);
 }
 
-static bool lfo4_valid(const lfo_cfg_t lfo[4], uint16_t bpm)
+static bool lfo4_valid(const lfo_cfg_v2_t lfo[4], uint16_t bpm)
 {
     if (bpm < 20 || bpm > 300) return false;
     for (int t = 0; t < 4; t++)
-        if (!lfo_cfg_valid(&lfo[t])) return false;
+        if (!lfo_cfg_v2_valid(&lfo[t])) return false;
     return true;
 }
 
@@ -206,7 +274,24 @@ bool settings_load(settings_t *s)
 {
     spi_flash_read(SETTINGS_ADDR, (uint8_t *)s, sizeof(*s));
     if (settings_valid(s)) return true;
-    /* Supported older format: migrate a valid v1 record (STORE-006). */
+    /* Supported older formats: migrate a valid v2 or v1 record (STORE-006). */
+    settings_v2_t v2;
+    spi_flash_read(SETTINGS_ADDR, (uint8_t *)&v2, sizeof(v2));
+    if (v2.magic == SETTINGS_V2_MAGIC && v2.hash == RECORD_HASH(&v2)
+        && v2.bpm >= 20 && v2.bpm <= 300 && v2.selected <= 3
+        && patterns_v2_valid(v2.active, v2.present, v2.pattern)) {
+        settings_defaults(s);
+        s->bpm = v2.bpm;
+        s->selected = v2.selected;
+        for (int t = 0; t < 4; t++) {
+            s->active[t] = v2.active[t];
+            s->present[t] = v2.present[t];
+            for (int p = 0; p < PATTERN_COUNT; p++)
+                lfo_cfg_from_v2(&s->pattern[t][p], &v2.pattern[t][p]);
+        }
+        s->hash = RECORD_HASH(s);
+        return true;
+    }
     settings_v1_t v1;
     spi_flash_read(SETTINGS_ADDR, (uint8_t *)&v1, sizeof(v1));
     if (v1.magic == SETTINGS_V1_MAGIC && v1.hash == RECORD_HASH(&v1)
@@ -214,7 +299,7 @@ bool settings_load(settings_t *s)
         settings_defaults(s);
         s->bpm = v1.bpm;
         s->selected = v1.selected;
-        for (int t = 0; t < 4; t++) s->pattern[t][0] = v1.lfo[t];
+        for (int t = 0; t < 4; t++) lfo_cfg_from_v2(&s->pattern[t][0], &v1.lfo[t]);
         s->hash = RECORD_HASH(s);
         return true;
     }
@@ -286,7 +371,8 @@ void project_defaults(project_t *p)
 {
     p->magic = PROJECT_MAGIC;
     p->bpm = 120;
-    p->reserved[0] = p->reserved[1] = 0;
+    p->swing = SWING_MIN;
+    p->reserved = 0;
     patterns_defaults(p->active, p->present, p->pattern);
     p->hash = RECORD_HASH(p);
 }
@@ -295,6 +381,7 @@ static bool project_valid(const project_t *p)
 {
     if (p->magic != PROJECT_MAGIC || p->hash != RECORD_HASH(p)) return false;
     if (p->bpm < 20 || p->bpm > 300) return false;
+    if (p->swing < SWING_MIN || p->swing > SWING_MAX) return false;
     return patterns_valid(p->active, p->present, p->pattern);
 }
 
@@ -311,14 +398,30 @@ project_status_t project_load(int slot, project_t *p)
         *p = record;
         return PROJECT_OK;
     }
-    /* Supported older format: migrate a valid v1 record (STORE-006). */
+    /* Supported older formats: migrate a valid v2 or v1 record (STORE-006). */
+    project_v2_t v2;
+    spi_flash_read(slot_addr(slot), (uint8_t *)&v2, sizeof(v2));
+    if (v2.magic == PROJECT_V2_MAGIC && v2.hash == RECORD_HASH(&v2)
+        && v2.bpm >= 20 && v2.bpm <= 300
+        && patterns_v2_valid(v2.active, v2.present, v2.pattern)) {
+        project_defaults(p);
+        p->bpm = v2.bpm;
+        for (int t = 0; t < 4; t++) {
+            p->active[t] = v2.active[t];
+            p->present[t] = v2.present[t];
+            for (int i = 0; i < PATTERN_COUNT; i++)
+                lfo_cfg_from_v2(&p->pattern[t][i], &v2.pattern[t][i]);
+        }
+        p->hash = RECORD_HASH(p);
+        return PROJECT_OK;
+    }
     project_v1_t v1;
     spi_flash_read(slot_addr(slot), (uint8_t *)&v1, sizeof(v1));
     if (v1.magic == PROJECT_V1_MAGIC && v1.hash == RECORD_HASH(&v1)
         && lfo4_valid(v1.lfo, v1.bpm)) {
         project_defaults(p);
         p->bpm = v1.bpm;
-        for (int t = 0; t < 4; t++) p->pattern[t][0] = v1.lfo[t];
+        for (int t = 0; t < 4; t++) lfo_cfg_from_v2(&p->pattern[t][0], &v1.lfo[t]);
         p->hash = RECORD_HASH(p);
         return PROJECT_OK;
     }
@@ -337,8 +440,8 @@ project_status_t project_peek(int slot)
     if (blank) return PROJECT_EMPTY;
     uint32_t magic = head[0] | (uint32_t)head[1] << 8 | (uint32_t)head[2] << 16
                    | (uint32_t)head[3] << 24;
-    return magic == PROJECT_MAGIC || magic == PROJECT_V1_MAGIC
-        ? PROJECT_OK : PROJECT_INVALID;
+    return magic == PROJECT_MAGIC || magic == PROJECT_V2_MAGIC
+        || magic == PROJECT_V1_MAGIC ? PROJECT_OK : PROJECT_INVALID;
 }
 
 project_status_t project_save(int slot, const project_t *p)
@@ -346,7 +449,7 @@ project_status_t project_save(int slot, const project_t *p)
     if (slot < 0 || slot >= project_slots_available()) return PROJECT_UNAVAIL;
     project_t copy = *p;
     copy.magic = PROJECT_MAGIC;
-    copy.reserved[0] = copy.reserved[1] = 0;
+    copy.reserved = 0;
     copy.hash = RECORD_HASH(&copy);
     uint32_t address = slot_addr(slot);
     project_t stored;

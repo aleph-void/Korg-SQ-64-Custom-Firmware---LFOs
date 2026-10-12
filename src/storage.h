@@ -43,6 +43,18 @@ void spi_flash_program(uint32_t address, const uint8_t *data, uint32_t length);
  * presence bitmap records which slots hold user content (PATTERN-001/002). */
 #define PATTERN_COUNT 16
 
+/* Step sequence: every pattern carries a 64-step gate mask, four bars of
+ * sixteen sixteenth-note steps (BAR-001). A set bit passes the LFO output
+ * during that step; a clear bit mutes it. All bits set (the default) is the
+ * classic continuous LFO. */
+#define BAR_COUNT  4
+#define BAR_STEPS  16
+
+/* Swing (SWING-001): the second sixteenth of every pair starts at this
+ * percentage of the pair instead of 50 %. 50 = unswung. */
+#define SWING_MIN 50
+#define SWING_MAX 75
+
 typedef struct {
     uint8_t wave;  /* 0..WAVE_COUNT-1 */
     uint8_t div;   /* 0..DIV_COUNT-1 synced rate division */
@@ -50,15 +62,16 @@ typedef struct {
     uint8_t phase; /* 0..15 sixteenths of a cycle */
     uint8_t cc;    /* 0..127 MIDI controller number */
     uint8_t dest;  /* DEST_* bit mask */
+    uint16_t steps[BAR_COUNT]; /* per-bar step gate mask, bit n = step n+1 */
 } lfo_cfg_t;
 
-/* Workspace settings record ("LFO2"). The v1 record ("LFO1", one config per
- * track) is a supported older format and loads as pattern 1 of each track. */
+/* Workspace settings record ("LFO3"). Older formats still load: v2 ("LFO2",
+ * no step masks or swing) and v1 ("LFO1", one config per track). */
 typedef struct {
     uint32_t magic;
     uint16_t bpm;       /* 20..300, internal clock */
     uint8_t selected;   /* edited LFO 0..3 */
-    uint8_t reserved;
+    uint8_t swing;      /* 50..75 % */
     uint8_t active[4];  /* active pattern per track, 0..15 */
     uint16_t present[4]; /* presence bitmap per track; active bit always set */
     lfo_cfg_t pattern[4][PATTERN_COUNT];
@@ -66,13 +79,14 @@ typedef struct {
 } settings_t;
 
 /* A project is the workspace's musical content: every pattern of every
- * track, the active/presence maps and the tempo ("LFP2"; v1 "LFP1" records
- * are a supported older format). The edited-LFO selection stays in the
- * settings record. */
+ * track, the active/presence maps, the tempo and the swing ("LFP3"; v2
+ * "LFP2" and v1 "LFP1" records are supported older formats). The edited-LFO
+ * selection stays in the settings record. */
 typedef struct {
     uint32_t magic;
     uint16_t bpm;
-    uint8_t reserved[2]; /* zero */
+    uint8_t swing;    /* 50..75 % */
+    uint8_t reserved; /* zero */
     uint8_t active[4];
     uint16_t present[4];
     lfo_cfg_t pattern[4][PATTERN_COUNT];

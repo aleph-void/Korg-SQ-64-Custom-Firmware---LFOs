@@ -67,7 +67,7 @@ const caps = discovery(await exchange(frame(0)));
 check(caps.protocol === 1 && caps.packetSize === 1024 && caps.flags === 0,
   `discovery: protocol ${caps.protocol}, ${caps.packetSize}-byte packets, flags ${caps.flags}`);
 const installed = versionReply(await exchange(frame(2, [0])));
-check(installed[0] === 1 && installed[1] === 0, `installed version ${installed.join('.')}`);
+check(installed[0] === 1 && installed[1] === 1, `installed version ${installed.join('.')}`);
 
 // Candidate: the same image with the header minor version bumped.
 const candidateBytes = vsb.slice();

@@ -34,18 +34,29 @@ restarts together) and MIDI start/stop in are honored.
 
 - Four LFOs (A–D) with six waveforms — sine, triangle, rise, fall, square,
   sample & hold — and sixteen synced rate divisions from 8 bars to 1/32,
-  including dotted and triplet values.
+  including dotted and triplet values. The A–D keys select the edited track
+  (spec TRACK-001).
 - Per-LFO depth (0–100 %), phase offset (sixteenths of a cycle) and MIDI CC
   number; each LFO streams its CC on its own MIDI channel (USB and DIN,
   rate-limited, sent only on change; channels 1–4 by default, movable in the
   global settings).
 - Destinations per LFO: A/B/C drive their **mod CV**, **pitch CV** and
   **gate** jacks (gate = square-thresholded LFO); LFO D pulses **trigger
-  jack 1** once per cycle. Toggled with the GATE / PITCH / MOD buttons,
-  which also show the edited LFO's routing on their LEDs.
+  jack 1** once per cycle. Routing is edited inside the PITCH / GATE / MOD
+  [edit modes](#edit-modes) (spec MODE-001); the CONTROL mode edits the
+  MIDI CC number.
+- Every pattern carries a 64-step **step sequence** — four bars of sixteen
+  sixteenth-note steps that gate the LFO — edited in the GATE mode with the
+  bar keys 1–4 (spec BAR-001), loopable over the selected bar with the LOOP
+  key (spec LOOP-001) and shuffled by the swing encoder (50–75 %, spec
+  SWING-001) — see [Steps, bars, loop and swing](#steps-bars-loop-and-swing).
+- Tap tempo and the tempo encoder set the internal clock across the declared
+  20–300 BPM range, one BPM per detent, clamped without wraparound (spec
+  TAP-001 / TEMPO-001).
 - Pad LEDs are live level meters — one animated bar per LFO; the display
   shows all four lanes plus the edited LFO's parameters and a waveform
-  preview with a phase cursor.
+  preview with a phase cursor. In the GATE mode the edited LFO's pad row
+  becomes the selected bar's step editor.
 - Full project lifecycle over the 64 documented saved-project slots: new,
   load, save and delete from the panel's PROJECT manager, with empty and
   invalid slots reported and the workspace left unchanged on rejection
@@ -72,14 +83,16 @@ restarts together) and MIDI start/stop in are honored.
 | Control | Action |
 | --- | --- |
 | PLAY / STOP | Resync all LFO phases and start MIDI clock out / stop it (LFOs keep running) |
-| TAP | Tap tempo |
-| A B C D | Select the edited LFO |
-| Pad *n* (any bank) | Set that LFO's rate to division *n* (1=8 bars … 16=1/32) |
-| SHIFT + pad *n* | Set that LFO's waveform (1=sine 2=tri 3=rise 4=fall 5=square 6=S+H) |
-| GATE / PITCH / MOD | Toggle that destination for the edited LFO (on D, GATE = cycle trigger) |
-| Tempo encoder | BPM (internal clock) |
-| Swing encoder | MIDI CC number for the edited LFO (edits its active pattern) |
-| Param 1–4 encoders | Waveform, rate division, depth, phase offset |
+| TAP | Tap tempo (see [Tap tempo and the tempo encoder](#tap-tempo-and-the-tempo-encoder)) |
+| A B C D | Select the edited LFO (TRACK-001); selection alone changes no data |
+| Pad *n* (any bank) | Set that LFO's rate to division *n* (1=8 bars … 16=1/32); in an [edit mode](#edit-modes) the pads edit that mode's parameter on the edited LFO instead |
+| SHIFT + pad *n* | Set that LFO's waveform (1=sine 2=tri 3=rise 4=fall 5=square 6=S+H); only outside the edit modes |
+| PITCH / GATE / MOD / CONTROL | Enter / leave that [edit mode](#edit-modes) (MODE-001); entry and exit alone change no data |
+| 1 2 3 4 | Select the edit bar of the step sequence (BAR-001) |
+| LOOP | Loop step playback over the selected bar (LOOP-001) |
+| Tempo encoder | BPM 20–300, one per detent, clamped (TEMPO-001) |
+| Swing encoder | Swing 50–75 %, one per detent, clamped; 50 = unswung (SWING-001) |
+| Param 1–4 encoders | Waveform, rate division, depth, phase offset — or the active edit mode's parameters |
 | GLOBAL | Open / close the [global settings](#global-settings) mode |
 | SHIFT + GLOBAL | Commit the workspace settings to SPI flash |
 | PROJECT | Open / close the [project manager](#projects) (pads become the 64 slots) |
@@ -88,23 +101,92 @@ restarts together) and MIDI start/stop in are honored.
 | Power button | Save and shut down |
 
 PLAY, STOP and TAP work in every mode; the LFOs never stop running. The
-transport, track, destination and pad controls are inert inside the global
-settings mode, whose only exit is GLOBAL itself.
+transport, track, destination-mode, bar, loop and pad controls are inert
+inside the global settings mode, whose only exit is GLOBAL itself, and
+inside the project manager and pattern selector the pads belong to those
+modes.
+
+## Edit modes
+
+The PITCH, GATE, MOD and CONTROL keys each toggle a documented edit mode
+over the normal surface (spec MODE-001). The active mode is reported on its
+key LED and named on the display; pressing the same key leaves, pressing a
+different mode key switches directly. Entering or leaving a mode changes no
+pattern, workspace or settings data, and all edits inside a mode go to that
+mode's documented parameters on the edited (active) track only — the A–D
+keys keep working inside every mode:
+
+| Mode | Param 1 encoder | Param 2 encoder | Pads 1–16 (any bank) |
+| --- | --- | --- | --- |
+| PITCH | Pitch-CV routing on/off (right/left; A–C) | Phase offset | Set the phase offset (pad *n* = *n*−1 sixteenths) |
+| GATE | Gate routing on/off (A–C; on D the cycle trigger) | — | Toggle step *n* of the selected bar (see below) |
+| MOD | Mod-CV routing on/off (A–C) | Depth 0–100 % | — |
+| CONTROL | MIDI CC number 0–127 | — | — |
+
+LFO D has no pitch/mod jacks: the PITCH and MOD modes report `NO JACK ON D`
+there and route nothing. Pads marked — are documented inert in that mode.
+The waveform, rate, depth and phase encoder assignments and the pad rate
+grid belong to the plain normal surface (no edit mode active).
+
+## Steps, bars, loop and swing
+
+Every pattern carries a 64-step gate mask: **four bars of sixteen
+sixteenth-note steps**, all on by default (the classic continuous LFO). The
+step clock derives from the same shared transport position as the LFO
+phases; a cleared step mutes the LFO for that sixteenth (outputs, gate and
+the CC stream read zero), so a mask turns a drone LFO into a rhythm.
+
+- **Bar keys 1–4** select the edit bar (spec BAR-001). The selection is
+  reported on the bar key LEDs and the display footer; selecting a bar
+  alone changes no pattern data. In the GATE mode, pads toggle the selected
+  bar's steps on the edited track only, and the edited track's pad row and
+  the display show that bar's mask with the current step blinking.
+- **LOOP** (spec LOOP-001) loops step playback over the selected bar: the
+  documented operations are engaging the loop, retargeting it by selecting
+  another bar while it runs, and clearing it with LOOP again. The loop
+  region is always exactly one declared bar of the active pattern, and the
+  position inside the looped bar still follows the transport, so clearing
+  the loop resumes the declared normal four-bar playback immediately. Loop
+  state is performance state: it is never persisted and touches no data.
+- **Swing** (spec SWING-001) delays the documented steps — the second
+  sixteenth of every pair — so that it starts at 50–75 % of the pair
+  instead of halfway. The swing encoder moves one percent per detent,
+  clamps at both declared limits, and 50 % is the unswung neutral setting;
+  the value is shown in the display header. Swing offsets only the step
+  boundaries (the documented steps); the first step of each pair and the
+  LFO phases themselves stay on the grid. Swing is part of the workspace
+  and saves with projects; adjusting it alone commits nothing.
+
+## Tap tempo and the tempo encoder
+
+The declared internal tempo range is **20–300 BPM** (spec TAP-001 /
+TEMPO-001). The tempo encoder moves one BPM per detent and clamps at both
+limits without wraparound; the current tempo is always shown in the display
+header (with `EXT` and the measured BPM while an external clock leads). Tap
+tempo uses two taps a quarter note apart: gaps of 200–3000 ms set
+`60000 / gap` BPM, clamped to the declared range. A single tap only arms
+the reference, and an out-of-range gap (faster than 300 BPM or slower than
+20 BPM) re-arms it and leaves the tempo unchanged, so the tempo is never
+undefined. Neither taps nor tempo or swing adjustments alone write anything
+to flash. In the emulator the declared behavior is measured on the MIDI
+clock output and the gate jack timing (`tools/browser_controls_test.mjs`);
+quantitative claims on physical hardware remain unmeasured.
 
 ## Projects
 
 A project is the workspace's musical content: every pattern of every track
 (4 tracks × 16 patterns of waveform, rate division, depth, phase offset, CC
-number and destinations), each track's active-pattern selection, the pattern
-presence maps and the tempo. The edited-LFO selection stays in the settings
-sector and the global settings are outside projects entirely. The 64
-saved-project slots follow the spec's documented catalog at SPI
-`0xC0000 + n x 0x3D000`; this firmware's record occupies the first 4 KiB
-sector of its slot (magic `LFP2`, FNV-1a checked) and the rest of the slot
-region is never written. Version 1.0 records (`LFP1`, one configuration per
-track) are a supported older format: they load with that configuration as
-pattern 1 of each track (spec STORE-006), and saves always write the current
-format.
+number, destinations and the 64-step gate mask), each track's active-pattern
+selection, the pattern presence maps, the tempo and the swing. The
+edited-LFO selection stays in the settings sector and the global settings
+are outside projects entirely. The 64 saved-project slots follow the spec's
+documented catalog at SPI `0xC0000 + n x 0x3D000`; this firmware's record
+occupies the first 4 KiB sector of its slot (magic `LFP3`, FNV-1a checked)
+and the rest of the slot region is never written. Older records are
+supported formats (spec STORE-006): v2 (`LFP2`, no step masks or swing)
+loads with every step on and neutral swing, and version 1.0 records
+(`LFP1`, one configuration per track) load with that configuration as
+pattern 1 of each track. Saves always write the current format.
 
 Press **PROJECT** to open the project manager. The 64 pads become the 64
 slots (bank A pad 1 = slot A1 … bank D pad 16 = slot D16), lit when
@@ -188,14 +270,14 @@ itself changes nothing. The complete set of SHIFT-modified functions is:
 
 | Combination | Function |
 | --- | --- |
-| SHIFT + pad 1–6 (normal mode) | Set the waveform of that pad's track |
+| SHIFT + pad 1–6 (normal mode, no edit mode active) | Set the waveform of that pad's track |
 | SHIFT + pad (project manager) | Save the workspace to that slot |
 | SHIFT + PROJECT | New project (declared defaults in the workspace) |
 | SHIFT + GLOBAL | Commit the workspace settings to SPI flash |
 
 Every other control is inert while SHIFT is held — including the transport
-keys, the encoders, pads 7–16 in normal mode, and any chord that also holds
-RECORD — and causes no state change.
+keys, the encoders, the edit-mode, bar and loop keys, pads 7–16 in normal
+mode, and any chord that also holds RECORD — and causes no state change.
 
 ## Build
 
@@ -220,9 +302,10 @@ dev`, open the printed URL, load `build/lfos.vsb` in **Browser emulator**,
 and run. The LFOs animate from the moment the panel comes up. Importable
 demo scripts for the workbench's **UI scripts** panel live in
 [`scripts/`](scripts/README.md); they walk through every major function
-(synced free-running, transport resync, waveforms and rates, destinations,
-CC assignment, external MIDI clock sync, persistence, version mode and a
-full self-update).
+(synced free-running, transport resync, waveforms and rates, destination
+routing in the edit modes, CC assignment, step editing with the bar loop
+and swing, external MIDI clock sync, persistence, version mode and a full
+self-update).
 
 Native headless:
 
@@ -245,17 +328,27 @@ make smoke      # 2M instructions, report in build/smoke.json
   installation context, then byte-exact verification of internal flash and
   the three installed SPI regions, with no critical hazard tripped.
 - `tools/browser_panel_test.mjs` (browser WASM engine): DMA panel scanning,
-  LFO animation on the CV observers and LED bars, destination toggles on the
-  gate and trigger jacks, MIDI CC output and reassignment, transport,
+  LFO animation on the CV observers and LED bars, destination routing edits
+  on the gate and trigger jacks, MIDI CC output and reassignment, transport,
   the full project lifecycle (save to first and last slots with
   untouched-slot and settings guards, new-project defaults without flash
   writes, exact load-back, empty/corrupt-slot rejection with the workspace
   unchanged, delete to an observably empty slot), pattern selection with
   edit isolation, SHIFT no-effect guards (SHIFT alone, SHIFT+PLAY,
-  SHIFT+encoder), the global settings mode (browse-without-commit, a
-  behavioral MIDI-channel edit committed on exit), the SHIFT+GLOBAL
-  settings commit, power-button shutdown, and settings, globals, pattern
-  and saved-project persistence across a cold restart.
+  SHIFT+GATE, SHIFT+encoder), the global settings mode
+  (browse-without-commit, a behavioral MIDI-channel edit committed on
+  exit), the SHIFT+GLOBAL settings commit, power-button shutdown, and
+  settings, globals, pattern and saved-project persistence across a cold
+  restart.
+- `tools/browser_controls_test.mjs` (browser WASM engine): the spec 0.6.0
+  panel requirements — track selection with edit-follow and
+  selection-only-no-mutation guards (TRACK-001), edit-mode entry/exit,
+  reporting and edit scoping (MODE-001), bar selection and step edits
+  (BAR-001), the bar loop with boundary bars and clear-restores-normal
+  (LOOP-001), and measured MIDI-clock and gate-jack intervals for tap
+  tempo (TAP-001), the tempo encoder's per-detent step and clamps
+  (TEMPO-001) and swing timing at the neutral and boundary values
+  (SWING-001).
 
 ## Storage map
 
@@ -263,9 +356,9 @@ make smoke      # 2M instructions, report in build/smoke.json
 | --- | --- |
 | Internal flash 0x00200000 + 64 KiB | This firmware (VSB payload 0x00000) |
 | SPI 0x00000–0x30000 | Installed-image regions; written only by the updater during a host-initiated installation |
-| SPI 0x40000 (one 4 KiB sector) | Committed workspace settings (magic `LFO2`, FNV-1a checked; v1 `LFO1` records still load); rewritten only when contents change |
+| SPI 0x40000 (one 4 KiB sector) | Committed workspace settings (magic `LFO3`, FNV-1a checked; v2 `LFO2` and v1 `LFO1` records still load); rewritten only when contents change |
 | SPI 0x41000 (one 4 KiB sector) | Committed global settings (magic `LFG1`, FNV-1a checked); rewritten only when contents change |
-| SPI 0xC0000 + n × 0x3D000 (first 4 KiB sector of each of the 64 documented slots) | Saved projects (magic `LFP2`, FNV-1a checked; v1 `LFP1` records still load); written only by the explicit save and delete operations |
+| SPI 0xC0000 + n × 0x3D000 (first 4 KiB sector of each of the 64 documented slots) | Saved projects (magic `LFP3`, FNV-1a checked; v2 `LFP2` and v1 `LFP1` records still load); written only by the explicit save and delete operations |
 | Everything else | Never written |
 
 ## Provenance
@@ -286,5 +379,8 @@ MIT License (see LICENSE).
 - External clock below ~2.5 BPM-equivalent tick spacing (more than one
   second between ticks) is treated as absent.
 - MIDI input notes are ignored; the LFO CC/CV outputs are the product.
-- Quantitative timing claims (jitter, latency) require hardware measurement
-  and are not made.
+- Quantitative timing behavior (tempo, tap and swing intervals) is measured
+  in the emulator's instruction-time clock by
+  `tools/browser_controls_test.mjs`; physical-hardware timing claims
+  (jitter, latency, real clock accuracy) require hardware measurement and
+  are not made.

@@ -84,6 +84,9 @@ static void apply_encoders(uint32_t value)
         enc_phase[e] = (int8_t)idx;
         if (delta == 1 && enc_edges[e] < 4096) enc_edges[e]++;
         else if (delta == 3 && enc_edges[e] > -4096) enc_edges[e]--;
+        /* delta == 2 is ambiguous and deliberately ignored: a stale half
+         * decoded after fresher data rewinds and re-advances the phase, and
+         * those paired ambiguous steps must cancel, not count. */
     }
 }
 
@@ -93,6 +96,16 @@ static void process_frame(int frame)
     if (value & PANEL_INVALID_BITS) return;     /* unwired or garbage frame */
     apply_encoders(value);
     apply_row((frame + 7) & 7, value);
+}
+
+/* Encoder-only decode for a stale half: quadrature edges are counted, but
+ * no button events are synthesized, so a stale snapshot can never replay a
+ * button edge out of order. */
+static void process_frame_encoders(int frame)
+{
+    uint32_t value = decode_bits(&scan_rx[frame * 8]);
+    if (value & PANEL_INVALID_BITS) return;
+    apply_encoders(value);
 }
 
 static void compose_tx(void)
@@ -185,12 +198,21 @@ void panel_poll(void)
     if (!(flags & (PANEL_HT_FLAG | PANEL_TC_FLAG))) return;
     REG32(DMA2 + 8) = flags & (PANEL_HT_FLAG | PANEL_TC_FLAG);
     if ((flags & (PANEL_HT_FLAG | PANEL_TC_FLAG)) == (PANEL_HT_FLAG | PANEL_TC_FLAG)) {
-        /* Fell a whole half-buffer behind: both halves are pending and one
-         * is older. The remaining transfer count says which half the DMA
-         * filled last; apply the older half first so a button edge is not
-         * replayed out of order (a stale "down" after the fresh "up"). */
+        /* Fell a whole half-buffer (or more) behind: both halves are pending
+         * and the scan may refill either one at any point during this poll,
+         * so the "older" half can hold a snapshot from before an edge the
+         * fresh half already carries — replaying it resurrects the previous
+         * state and turns one press into several. Buttons lose nothing from
+         * skipping the stale half: their events are synthesized from the
+         * cumulative row state, so any press that outlasts the lost
+         * half-sweep (~0.3 ms) still produces its edge from the fresh half.
+         * Encoders, however, are counted from quadrature edges, and frames
+         * dropped wholesale lose detents, so the stale half (ordered before
+         * the fresh one, per the remaining transfer count) is decoded for
+         * its encoder edges only. */
         bool first_half_fresh = REG32(PANEL_RX_STREAM + 4) <= PANEL_FRAMES * 4;
-        process_half(first_half_fresh ? 8 : 0);
+        for (int f = first_half_fresh ? 8 : 0, n = 0; n < 8; n++, f++)
+            process_frame_encoders(f);
         process_half(first_half_fresh ? 0 : 8);
     } else {
         process_half(flags & PANEL_HT_FLAG ? 0 : 8);

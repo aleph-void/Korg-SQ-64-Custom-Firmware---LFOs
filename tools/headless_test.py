@@ -153,7 +153,7 @@ def test_version_mode(image):
     h = boot(image, {6: 1 << 18})
     h.run(400000)
     replies = sysex_frames(h.exchange(frame(0x02, [0x00])))
-    expect(any(f[6] == 0x03 and f[7:9] == [1, 0] for f in replies), 'version reply 1.0')
+    expect(any(f[6] == 0x03 and f[7:9] == [1, 1] for f in replies), 'version reply 1.1')
     replies = sysex_frames(h.exchange(frame(0x04, [0] * 16)))
     expect(any(f[6] == 0x05 and f[7] != 0 for f in replies), 'begin rejected outside update mode')
 

@@ -1,7 +1,7 @@
 {
   "format": "sq64-ui-script",
   "version": 1,
-  "name": "LFOs 04: per-LFO MIDI CC numbers (CC encoder)",
+  "name": "LFOs 04: per-LFO MIDI CC numbers (CONTROL mode, Param 1)",
   "actions": [
     {
       "type": "power-on",
@@ -21,8 +21,17 @@
       "ms": 1000
     },
     {
+      "type": "press",
+      "control": "control",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 1000
+    },
+    {
       "type": "encoder",
-      "control": "swing",
+      "control": "param1",
       "delta": 63
     },
     {
@@ -31,7 +40,7 @@
     },
     {
       "type": "encoder",
-      "control": "swing",
+      "control": "param1",
       "delta": -10
     },
     {
@@ -49,12 +58,21 @@
     },
     {
       "type": "encoder",
-      "control": "swing",
+      "control": "param1",
       "delta": 73
     },
     {
       "type": "wait",
       "ms": 3000
+    },
+    {
+      "type": "press",
+      "control": "control",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 1000
     }
   ]
 }

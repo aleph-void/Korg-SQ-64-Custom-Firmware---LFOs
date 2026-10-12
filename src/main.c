@@ -10,8 +10,20 @@
  * MIDI CCs. SHIFT+GLOBAL commits workspace settings to SPI flash and the
  * power button saves and shuts down cleanly.
  *
+ * Every pattern additionally carries a 64-step gate mask (four bars of
+ * sixteen sixteenth-note steps, BAR-001) that mutes the LFO on cleared
+ * steps, a workspace swing amount that delays the second sixteenth of every
+ * pair (50..75 %, SWING-001), and the LOOP key loops step playback over the
+ * selected bar (LOOP-001).
+ *
  * Mode keys (each key returns to normal mode; SHIFT is a declared modifier
  * only, SHIFT-001):
+ * - PITCH, GATE, MOD and CONTROL each toggle their edit mode over the
+ *   normal surface (MODE-001). Entering or leaving changes no data; inside
+ *   a mode the pads and the parameter encoders edit only that mode's
+ *   documented parameters on the active track (PITCH: pitch-CV routing and
+ *   phase offset; GATE: gate/trigger routing and the selected bar's step
+ *   mask; MOD: mod-CV routing and depth; CONTROL: the MIDI CC number).
  * - PROJECT manages the 64 documented saved-project slots: each pad is a
  *   slot (load; SHIFT+pad saves; RECORD+pad deletes) and SHIFT+PROJECT
  *   starts a new default project (PROJECT-001..004).
@@ -60,6 +72,18 @@ static bool playing;
  * is left only through GLOBAL (the documented exit, GLOBAL-001). */
 typedef enum { MODE_NORMAL, MODE_PROJECT, MODE_PATTERN, MODE_GLOBAL } ui_mode_t;
 static ui_mode_t mode;
+
+/* Edit modes over the normal surface (MODE-001): the PITCH, GATE, MOD and
+ * CONTROL keys each toggle their mode; a different mode key switches
+ * directly. Entry and exit change no data. */
+typedef enum { EDIT_NONE, EDIT_PITCH, EDIT_GATE, EDIT_MOD, EDIT_CONTROL } edit_mode_t;
+static edit_mode_t edit;
+static const char *const EDIT_NAMES[] = {"", "PITCH", "GATE", "MOD", "CONTROL"};
+
+/* Bar selection (BAR-001) and the bar loop (LOOP-001): volatile performance
+ * state, never persisted; selection and loop toggling alone mutate nothing. */
+static uint8_t edit_bar; /* 0..BAR_COUNT-1, selected by the 1..4 keys */
+static bool loop_on;     /* step playback loops over the selected bar */
 
 /* Project manager state. */
 #define SLOT_NONE 0xff
@@ -167,22 +191,41 @@ static void prng_step(int i)
     lfo_rand[i] = r ? r : 0x7321;
 }
 
-static void lfo_update(void)
+/* Current step of the 64-step sequence (BAR-001), derived from the shared
+ * transport position. A sixteenth is 6 ticks at 24 PPQN; swing moves the
+ * boundary inside each 12-tick pair from 50 % up to 75 % (SWING-001). With
+ * the loop engaged, playback stays inside the selected bar and the position
+ * within it still follows the transport, so clearing the loop resumes the
+ * declared normal (never-looped) playback at once (LOOP-001). */
+static int step_now(void)
+{
+    uint32_t in_pair = (pos_tick % 12u) * 65536u + pos_frac;
+    uint32_t boundary = 786432u /* 12 ticks << 16 */ * cfg.swing / 100u;
+    int step = (int)((pos_tick / 12u % 32u) * 2u) + (in_pair >= boundary ? 1 : 0);
+    if (loop_on) step = edit_bar * BAR_STEPS + (step & (BAR_STEPS - 1));
+    return step;
+}
+
+__attribute__((noinline)) static void lfo_update(void)
 {
     uint32_t now = g_ms;
+    int step = step_now();
     for (int i = 0; i < 4; i++) {
         const lfo_cfg_t *c = lfo_cur(i);
+        bool step_on = (c->steps[step >> 4] >> (step & 15)) & 1;
         uint32_t period = DIV_TICKS[c->div];
         uint16_t raw = (uint16_t)(((pos_tick % period) << 16 | pos_frac) / period);
         if (raw < lfo_phase_raw[i]) { /* cycle wrapped */
             prng_step(i);
-            if (i == 3 && (c->dest & DEST_GATE)) {
+            if (i == 3 && (c->dest & DEST_GATE) && step_on) {
                 panel_triggers(1);
                 trigger_off_ms = now + glb.trig_ms;
             }
         }
         lfo_phase_raw[i] = raw;
-        uint16_t value = wave_value(i, (uint16_t)(raw + c->phase * 4096u));
+        /* A cleared step mutes the LFO: the raw value (and with it the gate
+         * jack) and the depth-scaled output both read zero. */
+        uint16_t value = step_on ? wave_value(i, (uint16_t)(raw + c->phase * 4096u)) : 0;
         uint16_t out = (uint16_t)((uint32_t)value * c->depth / 100u);
         lfo_out[i] = out;
         if (i < 3) {
@@ -268,6 +311,7 @@ static void outputs_resync(void)
 static void apply_project(const project_t *p)
 {
     cfg.bpm = p->bpm;
+    cfg.swing = p->swing;
     for (int t = 0; t < 4; t++) {
         cfg.active[t] = p->active[t];
         cfg.present[t] = p->present[t];
@@ -281,6 +325,7 @@ static void workspace_to_project(project_t *p)
 {
     project_defaults(p);
     p->bpm = cfg.bpm;
+    p->swing = cfg.swing;
     for (int t = 0; t < 4; t++) {
         p->active[t] = cfg.active[t];
         p->present[t] = cfg.present[t];
@@ -359,12 +404,25 @@ static void project_pad(int slot)
     }
 }
 
-static void toggle_dest(uint8_t bit)
+/* Routing edits inside the PITCH/GATE/MOD edit modes (MODE-001): the Param 1
+ * encoder turns the mode's destination on (right) or off (left) for the
+ * active track. Tracks A..C own their jacks; on LFO D only the GATE mode's
+ * cycle-trigger routing exists. */
+static void route_turn(uint8_t bit, int detents)
 {
     lfo_cfg_t *c = lfo_cur(cfg.selected);
     if (cfg.selected == 3 && bit != DEST_GATE) return; /* D is MIDI + trigger */
+    uint8_t want = detents > 0 ? bit : 0;
+    if ((c->dest & bit) == want) return;
     c->dest ^= bit;
-    if (!(c->dest & bit)) dest_cleared(cfg.selected, bit);
+    if (!want) dest_cleared(cfg.selected, bit);
+}
+
+/* MODE-001 entry/exit: the same key leaves, another mode key switches.
+ * Toggling alone changes no pattern, workspace or settings data. */
+static void edit_toggle(edit_mode_t which)
+{
+    edit = edit == which ? EDIT_NONE : which;
 }
 
 static bool pad_lookup(uint8_t sw, int *track, int *pad)
@@ -385,7 +443,11 @@ static bool globals_edited(void)
         || glb.trig_ms != glb_entry.trig_ms || glb.cc_ms != glb_entry.cc_ms;
 }
 
-static void handle_events(void)
+/* Kept out of line (like the other main-loop stages below): fully inlined
+ * into normal_main they fuse into straight-line blocks beyond what the
+ * browser engine's current TCI build translates reliably (its limit sits
+ * near a hundred instructions per block; see the emulator's engine notes). */
+__attribute__((noinline)) static void handle_events(void)
 {
     panel_event_t ev;
     int t, p;
@@ -406,7 +468,7 @@ static void handle_events(void)
             } else if (pad_lookup(ev.sw, &t, &p)) {
                 if (mode == MODE_PROJECT) {
                     project_pad_save(t * 16 + p);
-                } else if (mode == MODE_NORMAL && p < WAVE_COUNT) {
+                } else if (mode == MODE_NORMAL && edit == EDIT_NONE && p < WAVE_COUNT) {
                     cfg.selected = (uint8_t)t;
                     lfo_cur(t)->wave = (uint8_t)p;
                 }
@@ -417,6 +479,11 @@ static void handle_events(void)
         case SW_PLAY: transport_start(); continue;
         case SW_STOP: transport_stop(); continue;
         case SW_TAP: {
+            /* TAP-001: two taps 200..3000 ms apart (quarter notes at the
+             * declared 20..300 BPM range) set the internal tempo. A single
+             * tap only arms the reference; an out-of-range gap re-arms it
+             * and leaves the tempo unchanged, so the tempo is never
+             * undefined. Taps alone persist nothing. */
             uint32_t now = g_ms;
             uint32_t gap = now - tap_last_ms;
             if (gap >= 200 && gap <= 3000) {
@@ -455,18 +522,39 @@ static void handle_events(void)
         }
         if (mode == MODE_NORMAL) {
             switch (ev.sw) {
+            /* TRACK-001: A..D select the active edit track; selection alone
+             * changes no pattern, workspace or settings data. */
             case SW_TRACK_A: cfg.selected = 0; continue;
             case SW_TRACK_B: cfg.selected = 1; continue;
             case SW_TRACK_C: cfg.selected = 2; continue;
             case SW_TRACK_D: cfg.selected = 3; continue;
-            case SW_MOD: toggle_dest(DEST_MOD); continue;
-            case SW_PITCH: toggle_dest(DEST_PITCH); continue;
-            case SW_GATE: toggle_dest(DEST_GATE); continue;
+            /* MODE-001: the four edit-mode keys. */
+            case SW_PITCH: edit_toggle(EDIT_PITCH); continue;
+            case SW_GATE: edit_toggle(EDIT_GATE); continue;
+            case SW_MOD: edit_toggle(EDIT_MOD); continue;
+            case SW_CONTROL: edit_toggle(EDIT_CONTROL); continue;
+            /* BAR-001: the 1..4 keys select the edit bar; LOOP-001: LOOP
+             * toggles the bar loop. Both are selection-only state. */
+            case SW_BAR1: edit_bar = 0; continue;
+            case SW_BAR2: edit_bar = 1; continue;
+            case SW_BAR3: edit_bar = 2; continue;
+            case SW_BAR4: edit_bar = 3; continue;
+            case SW_LOOP: loop_on = !loop_on; continue;
             default: break;
             }
             if (pad_lookup(ev.sw, &t, &p)) {
-                cfg.selected = (uint8_t)t;
-                lfo_cur(t)->div = (uint8_t)p;
+                if (edit == EDIT_NONE) {
+                    cfg.selected = (uint8_t)t;
+                    lfo_cur(t)->div = (uint8_t)p;
+                } else if (edit == EDIT_PITCH) {
+                    /* Any bank's pad n: phase offset n-1 on the active track. */
+                    lfo_cur(cfg.selected)->phase = (uint8_t)p;
+                } else if (edit == EDIT_GATE) {
+                    /* Step edit: toggle step n of the selected bar on the
+                     * active track (BAR-001). */
+                    lfo_cur(cfg.selected)->steps[edit_bar] ^= (uint16_t)(1u << p);
+                }
+                /* MOD and CONTROL modes: the pads are documented inert. */
             }
         } else if (mode == MODE_PROJECT) {
             if (pad_lookup(ev.sw, &t, &p)) project_pad(t * 16 + p);
@@ -505,12 +593,41 @@ static void handle_events(void)
     if (mode != MODE_NORMAL) return; /* detents drained, nothing edited */
     lfo_cfg_t *c = lfo_cur(cfg.selected);
     if (d_tempo) {
+        /* TEMPO-001: one BPM per detent, clamped at the declared 20..300
+         * limits with no wraparound. */
         int bpm = cfg.bpm + d_tempo;
         cfg.bpm = (uint16_t)(bpm < 20 ? 20 : bpm > 300 ? 300 : bpm);
     }
     if (d_swing) {
-        int cc = c->cc + d_swing;
-        c->cc = (uint8_t)(cc < 0 ? 0 : cc > 127 ? 127 : cc);
+        /* SWING-001: one percent per detent across the declared 50..75 %
+         * range; 50 % is the unswung neutral setting. */
+        int swing = cfg.swing + d_swing;
+        cfg.swing = (uint8_t)(swing < SWING_MIN ? SWING_MIN
+                              : swing > SWING_MAX ? SWING_MAX : swing);
+    }
+    switch (edit) {
+    case EDIT_PITCH: /* MODE-001: pitch-CV routing and phase offset only */
+        if (d1) route_turn(DEST_PITCH, d1);
+        if (d2) c->phase = (uint8_t)((c->phase + d2) & 15);
+        return;
+    case EDIT_GATE: /* gate/trigger routing; the pads edit the step mask */
+        if (d1) route_turn(DEST_GATE, d1);
+        return;
+    case EDIT_MOD: /* mod-CV routing and depth only */
+        if (d1) route_turn(DEST_MOD, d1);
+        if (d2) {
+            int depth = c->depth + d2;
+            c->depth = (uint8_t)(depth < 0 ? 0 : depth > 100 ? 100 : depth);
+        }
+        return;
+    case EDIT_CONTROL: { /* the MIDI CC number only */
+        if (d1) {
+            int cc = c->cc + d1;
+            c->cc = (uint8_t)(cc < 0 ? 0 : cc > 127 ? 127 : cc);
+        }
+        return;
+    }
+    default: break;
     }
     if (d1) {
         int wave = c->wave + d1;
@@ -529,7 +646,7 @@ static void handle_events(void)
     }
 }
 
-static void update_leds(void)
+__attribute__((noinline)) static void update_leds(void)
 {
     uint32_t rows[8];
     bool blink = (g_ms >> 8) & 1;
@@ -562,18 +679,41 @@ static void update_leds(void)
         rows[6] |= 1u << 18; /* PATTERN button LED */
     } else {
         for (int i = 0; i < 4; i++) {
-            /* Each LFO's row of pads is a live level bar. */
-            int lit = (lfo_out[i] >> 12) + 1; /* 1..16 pads */
-            uint32_t cols = ((1u << lit) - 1) << 1;
+            uint32_t cols;
+            if (edit == EDIT_GATE && i == cfg.selected) {
+                /* Step editing: the active track's pad row shows the
+                 * selected bar's step mask, current step blinking. */
+                cols = (uint32_t)lfo_cur(i)->steps[edit_bar] << 1;
+                int step = step_now();
+                if (step >> 4 == edit_bar && blink) cols ^= 2u << (step & 15);
+            } else {
+                /* Each LFO's row of pads is a live level bar. */
+                int lit = (lfo_out[i] >> 12) + 1; /* 1..16 pads */
+                cols = ((1u << lit) - 1) << 1;
+            }
             if (i == cfg.selected) cols |= 1; /* track select LED, column 0 */
             rows[i * 2] = cols;
             rows[i * 2 + 1] = 0;
         }
-        /* Destination LEDs for the edited LFO (row 0 columns 18..20). */
-        const lfo_cfg_t *c = lfo_cur(cfg.selected);
-        if (c->dest & DEST_GATE) rows[0] |= 1u << 18;
-        if (c->dest & DEST_PITCH) rows[0] |= 1u << 19;
-        if (c->dest & DEST_MOD) rows[0] |= 1u << 20;
+        if (edit == EDIT_NONE) {
+            /* Destination LEDs for the edited LFO (row 0 columns 18..20). */
+            const lfo_cfg_t *c = lfo_cur(cfg.selected);
+            if (c->dest & DEST_GATE) rows[0] |= 1u << 18;
+            if (c->dest & DEST_PITCH) rows[0] |= 1u << 19;
+            if (c->dest & DEST_MOD) rows[0] |= 1u << 20;
+        } else {
+            /* The active edit mode's key LED (MODE-001 mode report). */
+            if (edit == EDIT_CONTROL) rows[0] |= 1u << 17;
+            if (edit == EDIT_GATE) rows[0] |= 1u << 18;
+            if (edit == EDIT_PITCH) rows[0] |= 1u << 19;
+            if (edit == EDIT_MOD) rows[0] |= 1u << 20;
+        }
+        /* Selected-bar and loop LEDs (BAR-001/LOOP-001 reports). */
+        if (loop_on) rows[2] |= 1u << 17;
+        if (edit_bar == 0) rows[2] |= 1u << 18;
+        if (edit_bar == 1) rows[2] |= 1u << 19;
+        if (edit_bar == 2) rows[4] |= 1u << 17;
+        if (edit_bar == 3) rows[4] |= 1u << 18;
         if (mode == MODE_GLOBAL) rows[4] |= 1u << 19; /* GLOBAL button LED */
     }
     panel_led_columns(rows);
@@ -669,7 +809,7 @@ static void draw_globals(void)
     display_flush();
 }
 
-static void draw_ui(void)
+__attribute__((noinline)) static void draw_ui(void)
 {
     if (mode == MODE_PROJECT) {
         draw_projects();
@@ -692,22 +832,56 @@ static void draw_ui(void)
     fb_number(60, 1, bpm_shown, 12);
     fb_text(84, 1, "BPM", 8);
     fb_text(112, 1, ext_active() ? "EXT" : "INT", ext_active() ? 15 : 8);
+    fb_text(140, 1, "SW", 8);
+    fb_number(158, 1, cfg.swing, cfg.swing == SWING_MIN ? 8 : 12);
     fb_text(216, 1, playing ? "PLAY" : "STOP", playing ? 15 : 6);
 
     fb_text(2, 12, "LFO", 8);
     fb_text(26, 12, (const char[]){(char)('A' + cfg.selected), 0}, 15);
-    fb_text(40, 12, WAVE_NAMES[c->wave], 15);
-    fb_text(76, 12, DIV_NAMES[c->div], 15);
-    fb_text(114, 12, "DEP", 8);
-    fb_number(138, 12, c->depth, 15);
-    fb_text(160, 12, "PHS", 8);
-    fb_number(184, 12, c->phase, 15);
-    fb_text(200, 12, "CC", 8);
-    fb_number(216, 12, c->cc, 15);
-    /* Destination flags: Mod / Pitch / Gate (trigger for LFO D). */
-    fb_text(238, 12, "M", (c->dest & DEST_MOD) && cfg.selected < 3 ? 15 : 3);
-    fb_text(244, 12, "P", (c->dest & DEST_PITCH) && cfg.selected < 3 ? 15 : 3);
-    fb_text(250, 12, cfg.selected == 3 ? "T" : "G", c->dest & DEST_GATE ? 15 : 3);
+    if (edit == EDIT_NONE) {
+        fb_text(40, 12, WAVE_NAMES[c->wave], 15);
+        fb_text(76, 12, DIV_NAMES[c->div], 15);
+        fb_text(114, 12, "DEP", 8);
+        fb_number(138, 12, c->depth, 15);
+        fb_text(160, 12, "PHS", 8);
+        fb_number(184, 12, c->phase, 15);
+        fb_text(200, 12, "CC", 8);
+        fb_number(216, 12, c->cc, 15);
+        /* Destination flags: Mod / Pitch / Gate (trigger for LFO D). */
+        fb_text(238, 12, "M", (c->dest & DEST_MOD) && cfg.selected < 3 ? 15 : 3);
+        fb_text(244, 12, "P", (c->dest & DEST_PITCH) && cfg.selected < 3 ? 15 : 3);
+        fb_text(250, 12, cfg.selected == 3 ? "T" : "G", c->dest & DEST_GATE ? 15 : 3);
+    } else {
+        /* MODE-001 mode report: the active edit mode and its scoped
+         * parameters on the active track. */
+        uint8_t bit = edit == EDIT_PITCH ? DEST_PITCH
+                    : edit == EDIT_MOD ? DEST_MOD : DEST_GATE;
+        fb_text(40, 12, EDIT_NAMES[edit], 15);
+        if (edit == EDIT_CONTROL) {
+            fb_text(96, 12, "CC", 8);
+            fb_number(114, 12, c->cc, 15);
+        } else if (cfg.selected == 3 && edit != EDIT_GATE) {
+            fb_text(96, 12, "NO JACK ON D", 8);
+        } else {
+            fb_text(96, 12, c->dest & bit ? "ON" : "OFF", c->dest & bit ? 15 : 8);
+        }
+        if (edit == EDIT_PITCH) {
+            fb_text(130, 12, "PHS", 8);
+            fb_number(154, 12, c->phase, 15);
+        } else if (edit == EDIT_MOD) {
+            fb_text(130, 12, "DEP", 8);
+            fb_number(154, 12, c->depth, 15);
+        } else if (edit == EDIT_GATE) {
+            /* The selected bar's sixteen steps (pads toggle them). */
+            fb_text(126, 12, "BAR", 8);
+            fb_number(150, 12, edit_bar + 1, 15);
+            for (int s = 0; s < BAR_STEPS; s++) {
+                bool on = (c->steps[edit_bar] >> s) & 1;
+                if (on) fb_fill(160 + s * 6, 12, 5, 6, 12);
+                else fb_fill(160 + s * 6, 17, 5, 1, 3);
+            }
+        }
+    }
 
     /* One lane per LFO: name, wave, division, CC and a live level bar. */
     for (int i = 0; i < 4; i++) {
@@ -733,6 +907,10 @@ static void draw_ui(void)
             fb_number(26 + t * 14, 57, cfg.active[t] + 1,
                       t == cfg.selected ? 12 : 5);
     }
+    /* Selected bar and loop state (BAR-001/LOOP-001 reports). */
+    fb_text(120, 57, "BAR", 5);
+    fb_number(144, 57, edit_bar + 1, 12);
+    fb_text(160, 57, "LOOP", loop_on ? 15 : 3);
     display_flush();
 }
 

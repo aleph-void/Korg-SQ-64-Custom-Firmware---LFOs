@@ -64,10 +64,13 @@ check(midi.some(m => m[0] === 0xfa), 'MIDI start sent');
 check(midi.some(m => m[0] === 0xf8), 'MIDI clock sent while playing');
 check(machine.board.panel.leds.play > 128, 'play LED lit');
 
-// Gate destination: select LFO A, toggle GATE, expect square gate activity.
+// Gate routing: select LFO A, enter GATE mode (MODE-001), turn the routing
+// on with Param 1, leave the mode, expect square gate activity.
 press('trackA');
 press('gate');
-check(machine.board.panel.leds.gate > 128, 'gate destination LED lit after toggle');
+check(machine.board.panel.leds.gate > 128, 'GATE mode key LED lit in gate edit mode');
+machine.event({type: 'encoder', control: 'param1', delta: 1});
+run(600000);
 let gateHigh = false, gateLow = false;
 for (let i = 0; i < 40 && !(gateHigh && gateLow); i++) {
   run(300000);
@@ -76,13 +79,19 @@ for (let i = 0; i < 40 && !(gateHigh && gateLow); i++) {
   if (g === 0) gateLow = true;
 }
 check(gateHigh && gateLow, 'square-thresholded gate toggles on LFO A jack');
-press('gate'); // toggle back off
+machine.event({type: 'encoder', control: 'param1', delta: -1}); // route back off
+run(600000);
+check(outputLevels(machine.board).Agate === 0, 'gate off after routing cleared');
+press('gate'); // leave the mode
 run(400000);
-check(outputLevels(machine.board).Agate === 0, 'gate off after destination cleared');
+check(machine.board.panel.leds.gate < 64, 'GATE mode key LED off after exit');
 
-// LFO D trigger pulses: enable GATE destination on D. The 20 ms pulse needs
-// fine sampling (~3 ms) to be observed reliably.
+// LFO D trigger pulses: route GATE (= cycle trigger) on D inside GATE mode.
+// The 20 ms pulse needs fine sampling (~3 ms) to be observed reliably.
 press('trackD');
+press('gate');
+machine.event({type: 'encoder', control: 'param1', delta: 1});
+run(600000);
 press('gate');
 let trigSeen = false;
 for (let i = 0; i < 400 && !trigSeen; i++) { run(50000); trigSeen = outputLevels(machine.board).D1 === 255; }
@@ -94,9 +103,13 @@ run(600000);
 check(machine.board.panel.leds.trackB > 128 && machine.board.panel.leds.trackD < 64,
   'pad press selected LFO B');
 
-// The CC encoder (swing position) moves LFO B from CC 2 to CC 7.
-machine.event({type: 'encoder', control: 'swing', delta: 5});
+// CONTROL mode (MODE-001): Param 1 moves LFO B from CC 2 to CC 7.
+press('control');
+check(machine.board.panel.leds.control > 128, 'CONTROL mode key LED lit');
+machine.event({type: 'encoder', control: 'param1', delta: 5});
 run(4000000);
+press('control');
+check(machine.board.panel.leds.control < 64, 'CONTROL mode key LED off after exit');
 const ccSeen = midi.length;
 run(4000000);
 check(midi.slice(ccSeen).some(m => (m[0] & 0xff) === 0xb1 && m[1] === 7),
@@ -127,8 +140,8 @@ hold('shift', true);
 press('A1');
 hold('shift', false);
 const a1 = slotBytes(machine, 0);
-check(a1[0] === 0x4c && a1[1] === 0x46 && a1[2] === 0x50 && a1[3] === 0x32,
-  'save wrote a project record to slot A1 (magic LFP2)');
+check(a1[0] === 0x4c && a1[1] === 0x46 && a1[2] === 0x50 && a1[3] === 0x33,
+  'save wrote a project record to slot A1 (magic LFP3)');
 check(slotBytes(machine, 1).every(b => b === 0xff), 'save left neighbor slot A2 untouched');
 check(settingsSector(machine) === settingsBefore, 'save left the settings sector untouched');
 
@@ -200,10 +213,13 @@ mark = midi.length;
 run(6000000);
 check(streams(mark).has('1:2'), 'selected pattern B2 took effect (default CC 2)');
 
-// Edit isolation: leave pattern mode, edit B2's CC, then switch back to B1.
+// Edit isolation: leave pattern mode, edit B2's CC (CONTROL mode), then
+// switch back to B1.
 press('pattern');
-machine.event({type: 'encoder', control: 'swing', delta: 3}); // B2: CC 2 -> 5
+press('control');
+machine.event({type: 'encoder', control: 'param1', delta: 3}); // B2: CC 2 -> 5
 run(4000000);
+press('control');
 mark = midi.length;
 run(4000000);
 check(streams(mark).has('1:5'), 'edited active pattern B2 streams CC 5');
@@ -223,12 +239,13 @@ press('shift'); // SHIFT alone: no effect
 hold('shift', true);
 mark = midi.length;
 press('play'); // undeclared SHIFT combination: the transport must not start
+press('gate'); // undeclared: must not enter the GATE edit mode
 machine.event({type: 'encoder', control: 'swing', delta: 4}); // undeclared
 run(4000000);
 hold('shift', false);
 check(!midi.slice(mark).some(m => m[0] === 0xfa), 'SHIFT+PLAY started no transport');
+check(machine.board.panel.leds.gate < 64, 'SHIFT+GATE entered no edit mode');
 run(4000000);
-check(!streams(mark).has('1:11'), 'SHIFT+encoder changed no CC assignment');
 check(machine.board.flash.writes === shiftWrites,
   'SHIFT alone and undeclared SHIFT combinations wrote nothing');
 

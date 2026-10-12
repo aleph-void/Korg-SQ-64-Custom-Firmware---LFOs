@@ -1,0 +1,169 @@
+{
+  "format": "sq64-ui-script",
+  "version": 1,
+  "name": "LFOs 11: GATE-mode step editing, bar keys, the bar loop and swing",
+  "actions": [
+    {
+      "type": "power-on",
+      "mode": "normal"
+    },
+    {
+      "type": "wait",
+      "ms": 20000
+    },
+    {
+      "type": "press",
+      "control": "trackA",
+      "ms": 150
+    },
+    {
+      "type": "press",
+      "control": "gate",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 1000
+    },
+    {
+      "type": "encoder",
+      "control": "param1",
+      "delta": 1
+    },
+    {
+      "type": "wait",
+      "ms": 1000
+    },
+    {
+      "type": "press",
+      "control": "bar1",
+      "ms": 150
+    },
+    {
+      "type": "press",
+      "control": "A2",
+      "ms": 150
+    },
+    {
+      "type": "press",
+      "control": "A4",
+      "ms": 150
+    },
+    {
+      "type": "press",
+      "control": "A6",
+      "ms": 150
+    },
+    {
+      "type": "press",
+      "control": "A8",
+      "ms": 150
+    },
+    {
+      "type": "press",
+      "control": "A10",
+      "ms": 150
+    },
+    {
+      "type": "press",
+      "control": "A12",
+      "ms": 150
+    },
+    {
+      "type": "press",
+      "control": "A14",
+      "ms": 150
+    },
+    {
+      "type": "press",
+      "control": "A16",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 2000
+    },
+    {
+      "type": "press",
+      "control": "loop",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 8000
+    },
+    {
+      "type": "encoder",
+      "control": "swing",
+      "delta": 25
+    },
+    {
+      "type": "wait",
+      "ms": 8000
+    },
+    {
+      "type": "encoder",
+      "control": "swing",
+      "delta": -25
+    },
+    {
+      "type": "wait",
+      "ms": 2000
+    },
+    {
+      "type": "press",
+      "control": "bar2",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 6000
+    },
+    {
+      "type": "press",
+      "control": "loop",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 4000
+    },
+    {
+      "type": "press",
+      "control": "gate",
+      "ms": 150
+    },
+    {
+      "type": "press",
+      "control": "pitch",
+      "ms": 150
+    },
+    {
+      "type": "press",
+      "control": "A9",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 4000
+    },
+    {
+      "type": "press",
+      "control": "A1",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 2000
+    },
+    {
+      "type": "press",
+      "control": "pitch",
+      "ms": 150
+    },
+    {
+      "type": "wait",
+      "ms": 1000
+    }
+  ]
+}

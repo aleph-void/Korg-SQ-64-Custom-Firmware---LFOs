@@ -6,7 +6,7 @@ SPEC_DIR ?= ../../spec
 EMULATOR_DIR ?= ../../emulator
 
 VERSION_MAJOR = 1
-VERSION_MINOR = 0
+VERSION_MINOR = 1
 
 # Built as the ARMv6-M (Thumb-1) subset: it executes unchanged on the
 # Cortex-M7, and producing no IT blocks keeps interrupt delivery working on
@@ -49,6 +49,7 @@ test: build/lfos.vsb
 	$(PYTHON) tools/headless_test.py --emulator $(EMULATOR_DIR)
 	node tools/browser_update_test.mjs $(EMULATOR_DIR)/web
 	node tools/browser_panel_test.mjs $(EMULATOR_DIR)/web
+	node tools/browser_controls_test.mjs $(EMULATOR_DIR)/web
 
 clean:
 	rm -rf build
