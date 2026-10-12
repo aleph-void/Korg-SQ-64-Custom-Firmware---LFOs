@@ -74,7 +74,9 @@ restarts together) and MIDI start/stop in are honored.
 - Settings persist to SPI flash (SHIFT+GLOBAL commits; the power button
   saves and shuts down cleanly through the PB7 power hold).
 - Boot chords per the spec: hold **GLOBAL** at power-on for version mode,
-  **GLOBAL+PATTERN** for update mode, with the same complete VUP self-updater
+  **GLOBAL+PATTERN** for update mode. In version mode the PLAY indicator is
+  lit, and pressing **PLAY** continues the normal boot sequence to the
+  ready state (BOOT-004). Update mode carries the same complete VUP self-updater
   as the sibling euclidean firmware (protocol 1, 1024-byte packets, full
   validation before a RAM-resident installer programs anything).
 
