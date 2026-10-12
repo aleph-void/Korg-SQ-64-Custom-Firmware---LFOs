@@ -106,6 +106,88 @@ press('stop');
 run(1000000);
 check(midi.some(m => m[0] === 0xfc), 'MIDI stop sent');
 
+// --- Project management (PROJECT-001..004) --------------------------------
+// Slot n's record lives in the first bytes of SPI 0xC0000 + n * 0x3D000.
+const slotBytes = (m, slot, n = 64) => {
+  const base = 0xc0000 + slot * 0x3d000;
+  return Array.from(m.board.flash.data.slice(base, base + n));
+};
+const settingsSector = m => Array.from(m.board.flash.data.slice(0x40000, 0x41000)).join();
+const streams = from => new Set(midi.slice(from).filter(m => (m[0] & 0xf0) === 0xb0)
+  .map(m => (m[0] & 15) + ':' + m[1]));
+const hold = (control, down) => { machine.event({type: 'button', control, down}); run(400000); };
+
+press('project'); // enter the project manager
+run(400000);
+check(machine.board.panel.leds.project > 128, 'PROJECT LED lit in project mode');
+
+// PROJECT-003: SHIFT+pad saves the workspace (LFO B on CC 7) to slot A1 only.
+const settingsBefore = settingsSector(machine);
+hold('shift', true);
+press('A1');
+hold('shift', false);
+const a1 = slotBytes(machine, 0);
+check(a1[0] === 0x4c && a1[1] === 0x46 && a1[2] === 0x50 && a1[3] === 0x31,
+  'save wrote a project record to slot A1 (magic LFP1)');
+check(slotBytes(machine, 1).every(b => b === 0xff), 'save left neighbor slot A2 untouched');
+check(settingsSector(machine) === settingsBefore, 'save left the settings sector untouched');
+
+// PROJECT-001: SHIFT+PROJECT starts a new default project in the workspace
+// (LFO B returns to CC 2) without touching any saved slot or the flash.
+const writesBeforeNew = machine.board.flash.writes;
+const a1Saved = slotBytes(machine, 0).join();
+hold('shift', true);
+press('project');
+hold('shift', false);
+check(machine.board.flash.writes === writesBeforeNew, 'new project performed no flash writes');
+check(slotBytes(machine, 0).join() === a1Saved, 'new project left saved slot A1 untouched');
+let mark = midi.length;
+run(6000000);
+check(streams(mark).has('1:2'), 'new project restored declared defaults (LFO B on CC 2)');
+
+// PROJECT-002: loading slot A1 reproduces the saved workspace exactly.
+press('A1');
+mark = midi.length;
+run(6000000);
+check(streams(mark).has('1:7'), 'loading slot A1 restored the saved workspace (LFO B on CC 7)');
+
+// PROJECT-002: an empty slot is reported without changing the workspace.
+press('C5');
+mark = midi.length;
+run(6000000);
+check(streams(mark).has('1:7') && !streams(mark).has('1:2'),
+  'empty-slot load left the workspace unchanged');
+
+// PROJECT-002: a corrupted record is rejected without changing the workspace.
+machine.board.flash.data[0xc0000] ^= 0xff;
+press('A1');
+mark = midi.length;
+run(6000000);
+check(streams(mark).has('1:7') && !streams(mark).has('1:2'),
+  'invalid-slot load left the workspace unchanged');
+
+// PROJECT-004: RECORD+pad deletes exactly one slot, observably empty after.
+hold('shift', true); // repopulate A1 first (over the corrupted record)
+press('A1');
+hold('shift', false);
+hold('record', true);
+press('A1');
+hold('record', false);
+check(slotBytes(machine, 0, 4096).every(b => b === 0xff), 'deleted slot A1 is observably empty');
+press('A1'); // a load attempt now reports empty and changes nothing
+mark = midi.length;
+run(6000000);
+check(streams(mark).has('1:7'), 'deleted-slot load left the workspace unchanged');
+
+// Save to the last slot D16 (63) for the cold-restart persistence check.
+hold('shift', true);
+press('D16');
+hold('shift', false);
+check(slotBytes(machine, 63)[0] === 0x4c, 'project saved to last slot D16');
+press('project'); // leave the project manager
+run(400000);
+check(machine.board.panel.leds.project < 64, 'PROJECT LED off after leaving project mode');
+
 // Commit with GLOBAL, then power off and verify the hold release.
 const writesBefore = machine.board.flash.writes;
 press('global');
@@ -121,11 +203,33 @@ const savedSpi = machine.board.flash.data.slice();
 const midi2 = [];
 const machine2 = new Machine(engine, await loadImage(new Uint8Array(readFileSync(imagePath))), {onMidi: m => midi2.push(Array.from(m))});
 machine2.board.flash.data.set(savedSpi);
-let n = 6000000;
-while (n > 0) { const r = machine2.run(200000); if (r.error) throw Error(r.error); n -= 200000; }
+const run2 = n => {
+  while (n > 0) { const r = machine2.run(200000); if (r.error) throw Error(r.error); n -= 200000; }
+};
+run2(6000000);
 check(machine2.board.panel.leds.trackB > 128, 'committed selection (LFO B) restored after restart');
 check(midi2.some(m => (m[0] & 0xff) === 0xb1 && m[1] === 7),
   'committed CC assignment (B on CC 7) restored after restart');
+
+// Saved projects persist across the cold restart: reset the workspace to the
+// defaults (B back to CC 2), then load slot D16 to bring back CC 7.
+const press2 = control => {
+  machine2.event({type: 'button', control, down: true}); run2(400000);
+  machine2.event({type: 'button', control, down: false}); run2(400000);
+};
+machine2.event({type: 'button', control: 'shift', down: true}); run2(400000);
+press2('project');
+machine2.event({type: 'button', control: 'shift', down: false}); run2(400000);
+let mark2 = midi2.length;
+run2(6000000);
+check(midi2.slice(mark2).some(m => (m[0] & 0xff) === 0xb1 && m[1] === 2),
+  'new project after restart reset LFO B to CC 2');
+press2('project');
+press2('D16');
+mark2 = midi2.length;
+run2(6000000);
+check(midi2.slice(mark2).some(m => (m[0] & 0xff) === 0xb1 && m[1] === 7),
+  'project in last slot D16 reloads after the cold restart');
 machine2.close();
 
 machine.close();

@@ -45,6 +45,10 @@ restarts together) and MIDI start/stop in are honored.
 - Pad LEDs are live level meters — one animated bar per LFO; the display
   shows all four lanes plus the edited LFO's parameters and a waveform
   preview with a phase cursor.
+- Full project lifecycle over the 64 documented saved-project slots: new,
+  load, save and delete from the panel's PROJECT manager, with empty and
+  invalid slots reported and the workspace left unchanged on rejection
+  (spec PROJECT-001..004) — see [Projects](#projects).
 - Settings persist to SPI flash (GLOBAL commits; the power button saves and
   shuts down cleanly through the PB7 power hold).
 - Boot chords per the spec: hold **GLOBAL** at power-on for version mode,
@@ -66,7 +70,48 @@ restarts together) and MIDI start/stop in are honored.
 | Swing encoder | MIDI CC number for the edited LFO |
 | Param 1–4 encoders | Waveform, rate division, depth, phase offset |
 | GLOBAL | Commit settings to SPI flash |
+| PROJECT | Open / close the project manager (pads become the 64 slots) |
+| SHIFT + PROJECT | New project: reset the workspace to the declared defaults |
 | Power button | Save and shut down |
+
+## Projects
+
+A project is the workspace's musical content: all four LFO configurations
+(waveform, rate division, depth, phase offset, CC number, destinations) plus
+the tempo. The edited-LFO selection stays in the settings sector. The 64
+saved-project slots follow the spec's documented catalog at SPI
+`0xC0000 + n x 0x3D000`; this firmware's record occupies the first 4 KiB
+sector of its slot (magic `LFP1`, FNV-1a checked) and the rest of the slot
+region is never written.
+
+Press **PROJECT** to open the project manager. The 64 pads become the 64
+slots (bank A pad 1 = slot A1 … bank D pad 16 = slot D16), lit when
+populated and blinking for the current slot; the display shows the catalog
+grid and a status line that reports every operation.
+
+- **Pad** — load that slot into the workspace. An empty or invalid slot is
+  reported (`EMPTY` / `INVALID`) and the workspace is not changed.
+- **SHIFT + pad** — the explicit save operation: write the workspace to that
+  slot. Only that slot is modified, and `SAVED` is reported only after the
+  committed record reads back from flash.
+- **RECORD + pad** — the explicit delete operation: erase that slot's record
+  sector, leaving it observably empty. Deleting an empty slot is accepted
+  and performs no flash write. Every other slot, the workspace and the
+  settings are untouched.
+- **SHIFT + PROJECT** (in any mode) — new project: the workspace returns to
+  the declared defaults (the same four-LFO setup a first boot shows). No
+  saved slot is modified and nothing persists until an explicit save.
+- **PROJECT** again leaves the manager; the LFOs keep running throughout.
+
+Saved projects persist like settings: they survive power-button shutdown and
+a cold restart. An interrupted save or delete leaves the previous record, the
+complete new record, or an erased sector that is reported as empty/invalid on
+load — never undefined data in the workspace. Re-saving identical content
+performs no erase/program cycle (wear bounding, spec STORE-007). The firmware
+sizes the catalog from the SPI flash's JEDEC density byte and only addresses
+slots that physically fit: on the native emulator's 1 MiB model two slots are
+available, on the 16 MiB browser model (and the presumed real part) all 64;
+out-of-range slots report `NO SLOT` and are never addressed.
 
 ## Build
 
@@ -118,8 +163,12 @@ make smoke      # 2M instructions, report in build/smoke.json
 - `tools/browser_panel_test.mjs` (browser WASM engine): DMA panel scanning,
   LFO animation on the CV observers and LED bars, destination toggles on the
   gate and trigger jacks, MIDI CC output and reassignment, transport,
-  GLOBAL commit, power-button shutdown, and settings persistence across a
-  cold restart.
+  GLOBAL commit, the full project lifecycle (save to first and last slots
+  with untouched-slot and settings guards, new-project defaults without
+  flash writes, exact load-back, empty/corrupt-slot rejection with the
+  workspace unchanged, delete to an observably empty slot), power-button
+  shutdown, and settings plus saved-project persistence across a cold
+  restart.
 
 ## Storage map
 
@@ -128,6 +177,7 @@ make smoke      # 2M instructions, report in build/smoke.json
 | Internal flash 0x00200000 + 64 KiB | This firmware (VSB payload 0x00000) |
 | SPI 0x00000–0x30000 | Installed-image regions; written only by the updater during a host-initiated installation |
 | SPI 0x40000 (one 4 KiB sector) | Committed settings (magic `LFO1`, FNV-1a checked); rewritten only when contents change |
+| SPI 0xC0000 + n × 0x3D000 (first 4 KiB sector of each of the 64 documented slots) | Saved projects (magic `LFP1`, FNV-1a checked); written only by the explicit save and delete operations |
 | Everything else | Never written |
 
 ## Provenance
@@ -142,8 +192,8 @@ MIT License (see LICENSE).
 
 ## Known limits
 
-- The stock backup/restore SysEx transport is not implemented; settings are
-  this firmware's only persistent data.
+- The stock backup/restore SysEx transport is not implemented; settings and
+  the saved-project catalog are this firmware's only persistent data.
 - The analog sync jack is not used; external sync means incoming MIDI clock.
 - External clock below ~2.5 BPM-equivalent tick spacing (more than one
   second between ticks) is treated as absent.

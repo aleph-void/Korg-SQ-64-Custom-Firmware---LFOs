@@ -33,6 +33,7 @@ off.
 | `06-save-and-persistence.json` | GLOBAL settings commit, power-button shutdown, persistence | LFO B is set to S+H at 1/8T, committed, powered off, rebooted: B comes back selected with the committed wave and rate |
 | `07-version-mode.json` | GLOBAL boot chord | `LFOS SQ-64 / VERSION 1.0 / ORIGINAL SYNCED-LFO FIRMWARE`, then a clean power-off |
 | `08-update-mode-install.json` | GLOBAL+PATTERN boot chord and the full VUP self-updater | See below |
+| `09-project-management.json` | The PROJECT manager: save, new project, load, empty-slot report, delete | LFO B is set to square, saved to slot A1 (its pad lights and blinks as current); SHIFT+PROJECT resets the workspace to the sine/tri defaults; loading A1 brings the square back; empty slot C5 reports `EMPTY C5` without changing anything; RECORD+pad deletes A1 (its pad goes dark); PROJECT returns to the lanes |
 
 ## Notes on script 08 (updater)
 
